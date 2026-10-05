@@ -69,9 +69,53 @@ _sd_manual_removal() {
 # systemd treats '%' as a specifier prefix; escape it in literal values.
 _sd_escape() { printf '%s' "${1//%/%%}"; }
 
+# Exec lines also expand $VARIABLES, so '$' is written as '$$' there too.
+_sd_exec_escape() {
+    local s="${1//%/%%}"
+    printf '%s' "${s//\$/\$\$}"
+}
+
+# A path that can't break the unit file's double quotes.
+_sd_quotable() {
+    case "$1" in *[\"\\]* | *$'\n'*) return 1 ;; esac
+}
+
+# The service's PATH: only the folders of the commands it runs (ddev, and docker
+# for the wait-for-Docker step), then the standard system folders.
+# Deliberately NOT the user's terminal PATH: that can contain relative entries
+# ("." would run programs from the project folder at boot), WSL's /mnt/c
+# folders that aren't mounted yet at boot, or folders from a virtualenv or
+# version manager that only existed in that terminal.
+_sd_service_path() {
+    local ddev_bin="$1" docker_bin="$2" path="" dir
+    local std="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    for dir in "$(dirname "$ddev_bin")" ${docker_bin:+"$(dirname "$docker_bin")"}; do
+        case "$dir" in /*) ;; *) continue ;; esac              # absolute only
+        case "$dir" in *:* | *[\"\\]* | *$'\n'*) continue ;; esac  # can't go in PATH
+        case ":${path}:${std}:" in *":${dir}:"*) continue ;; esac  # already there
+        path="${path:+${path}:}${dir}"
+    done
+    printf '%s' "${path:+${path}:}${std}"
+}
+
+# Absolute path of a command as found in PATH, symlinks kept as they are:
+# package managers point a stable path (/usr/bin/ddev, …/linuxbrew/bin/ddev) at
+# a versioned one (…/Cellar/ddev/1.25.4/bin/ddev) that the next upgrade deletes.
+_sd_find_command() {
+    local bin
+    bin="$(command -v "$1" 2>/dev/null)" || return 1
+    case "$bin" in
+        /*) ;;
+        */*) bin="$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")" ;;
+        *) return 1 ;;   # a shell function or alias, not a file
+    esac
+    printf '%s\n' "$bin"
+}
+
 _sd_render_unit() {
-    local name="$1" root="$2" user="$3" group="$4" home="$5" ddev_bin="$6"
-    local docker_deps=""
+    local name="$1" root="$2" user="$3" group="$4" home="$5" ddev_bin="$6" docker_bin="$7"
+    local docker_deps="" exec_ddev
+    exec_ddev="$(_sd_exec_escape "$ddev_bin")"
     if systemctl list-unit-files docker.service >/dev/null 2>&1 &&
         systemctl list-unit-files docker.service 2>/dev/null | grep -q '^docker\.service'; then
         docker_deps=$'Wants=docker.service\nAfter=docker.service'
@@ -92,12 +136,12 @@ User=${user}
 Group=${group}
 WorkingDirectory=$(_sd_escape "$root")
 Environment="HOME=$(_sd_escape "$home")"
-Environment="PATH=$(_sd_escape "$(dirname "$ddev_bin")"):/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PATH=$(_sd_escape "$(_sd_service_path "$ddev_bin" "$docker_bin")")"
 # Wait up to ~2 minutes for the Docker daemon to answer before starting.
 # (\$\$ is systemd's escape for a literal \$ inside Exec lines.)
 ExecStartPre=/bin/sh -c 'i=0; until docker info >/dev/null 2>&1; do i=\$\$((i+1)); [ \$\$i -ge 60 ] && exit 1; sleep 2; done'
-ExecStart=${ddev_bin} start ${name}
-ExecStop=${ddev_bin} stop ${name}
+ExecStart="${exec_ddev}" start ${name}
+ExecStop="${exec_ddev}" stop ${name}
 TimeoutStartSec=600
 TimeoutStopSec=180
 
@@ -108,7 +152,7 @@ EOF
 
 plugin_enable() {
     local name="$1" root="$2"
-    local unit user group home ddev_bin tmp
+    local unit user group home ddev_bin docker_bin tmp
 
     if [ "$(id -u)" -eq 0 ]; then
         echo "❌ Error: run this as your normal user, not root (DDEV does not run as root)." >&2
@@ -119,18 +163,20 @@ plugin_enable() {
         return 1 ;;
     esac
 
-    ddev_bin="$(command -v ddev || true)"
-    if [ -z "$ddev_bin" ]; then
+    if ! ddev_bin="$(_sd_find_command ddev)"; then
         echo "❌ Error: ddev not found in PATH." >&2
         return 1
     fi
-    # Keep the path as found in PATH; do NOT resolve symlinks. Package managers
-    # point a stable path (/usr/bin/ddev, …/linuxbrew/bin/ddev) at a versioned
-    # one (…/Cellar/ddev/1.25.4/bin/ddev) that the next upgrade deletes.
-    case "$ddev_bin" in
-        /*) ;;
-        *) ddev_bin="$(cd "$(dirname "$ddev_bin")" && pwd)/$(basename "$ddev_bin")" ;;
-    esac
+    if ! _sd_quotable "$ddev_bin"; then
+        echo "❌ Error: ddev's path contains a quote, backslash or newline: ${ddev_bin}" >&2
+        return 1
+    fi
+    # The boot service runs `docker info` to wait for Docker, so it needs to find
+    # the docker command even if it lives outside the standard system folders.
+    if ! docker_bin="$(_sd_find_command docker)"; then
+        docker_bin=""
+        echo "⚠️  Warning: the docker command isn't in your PATH; the boot service can't check that Docker is ready and will fail."
+    fi
 
     user="$(id -un)"
     group="$(id -gn)"
@@ -142,7 +188,7 @@ plugin_enable() {
     fi
 
     tmp="$(mktemp)"
-    _sd_render_unit "$name" "$root" "$user" "$group" "$home" "$ddev_bin" >"$tmp"
+    _sd_render_unit "$name" "$root" "$user" "$group" "$home" "$ddev_bin" "$docker_bin" >"$tmp"
 
     if [ -f "$unit" ] && cmp -s "$tmp" "$unit"; then
         rm -f "$tmp"

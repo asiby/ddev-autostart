@@ -90,15 +90,25 @@ health_checks() {
     return 0
   fi
 
+  # Make docker reachable from an unusual folder too, like a Homebrew or Nix
+  # install. The service must add that folder (and only that) to its PATH.
+  DOCKERBIN="$(mktemp -d "${HOME}/tmp/dockerbin.XXXXXX")"
+  ln -s "$(command -v docker)" "${DOCKERBIN}/docker"
+
   # Inside the project: name auto-detected, real unit installed and enabled.
-  run ddev autostart enable
+  run env PATH="${DOCKERBIN}:${PATH}" ddev autostart enable
   assert_success
   assert_file_exists "/etc/systemd/system/${UNIT}"
   run systemctl is-enabled "${UNIT}"
   assert_output "enabled"
+  run grep '^Environment="PATH=' "/etc/systemd/system/${UNIT}"
+  assert_output --partial "${DOCKERBIN}:"
+  refute_output --regexp '(^|[=:])\.?(:|"$)'   # no relative or empty entries
+  run systemd-analyze verify "/etc/systemd/system/${UNIT}"
+  assert_success
 
   # Enabling again is a no-op.
-  run ddev autostart enable
+  run env PATH="${DOCKERBIN}:${PATH}" ddev autostart enable
   assert_success
   assert_output --partial "already configured"
 
@@ -153,6 +163,7 @@ teardown() {
     sudo rm -f "/etc/systemd/system/${UNIT}"
     sudo systemctl daemon-reload || true
   fi
+  [ -n "${DOCKERBIN:-}" ] && rm -rf "${DOCKERBIN}"
   ddev add-on remove "${ADDON_NAME}" >/dev/null 2>&1 || true
   ddev delete -Oy "${PROJNAME}" >/dev/null 2>&1
   # Persist TESTDIR if running inside GitHub Actions. Useful for uploading test result artifacts

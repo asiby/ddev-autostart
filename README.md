@@ -98,7 +98,7 @@ site-a   enabled    active    running  /home/me/code/site-a
 sudo systemctl start ddev-autostart-<project>.service
 ```
 
-The service records where `ddev` is installed. If you move or reinstall DDEV to a **different location**, run `ddev autostart enable <project>` again to update it. Normal upgrades (apt, Homebrew, `ddev self-upgrade`) keep the same location and need nothing.
+The service records where `ddev` and `docker` are installed, and adds only those folders to the standard system ones; it never copies your terminal's `PATH`. If you move or reinstall either to a **different location**, run `ddev autostart enable <project>` again to update it. Normal upgrades (apt, Homebrew, `ddev self-upgrade`) keep the same location and need nothing.
 
 ## Troubleshooting
 

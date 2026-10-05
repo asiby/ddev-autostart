@@ -1,0 +1,45 @@
+name: ddev.d
+
+# `ddev autostart` is a global host command: it is installed into the global DDEV
+# directory (~/.ddev) and works for every project, not just the one it was
+# installed from. Every file under these paths carries #ddev-generated so that
+# `ddev add-on get` can update it and `ddev add-on remove` can delete it.
+global_files:
+  - commands/host/autostart
+  - commands/host/autostart.d
+
+post_install_actions:
+  - |
+    #ddev-description:Show how to use ddev autostart
+    echo "ddev autostart is installed for all projects. Try: ddev autostart list"
+
+removal_actions:
+  - |
+    #ddev-interactive
+    #ddev-description:Remove boot registrations for all projects
+    #ddev-warning-exit-code: 2
+    # Removal actions run BEFORE DDEV deletes the add-on's files, so the command
+    # is still here and its own plugin code does the cleanup on any platform.
+    # Otherwise the boot services would outlive the add-on: they call
+    # `ddev start` directly, so they'd keep starting projects with nothing
+    # left to manage them.
+    cmd=""
+    for d in "$HOME/.ddev" "${XDG_CONFIG_HOME:-$HOME/.config}/ddev"; do
+      if [ -f "$d/commands/host/autostart" ]; then cmd="$d/commands/host/autostart"; break; fi
+    done
+    [ -n "$cmd" ] || exit 0
+
+    # sudo prompts on the controlling terminal (/dev/tty), not on stdout, so it
+    # can ask for a password whenever a terminal exists, even if DDEV captures
+    # this step's output (DDEV < v1.25.3, which ignores #ddev-interactive) or
+    # the user pipes it. With no terminal at all (CI, cron, scripts), only
+    # passwordless sudo is tried and the manual steps are printed otherwise.
+    if { : </dev/tty; } 2>/dev/null; then
+      if bash "$cmd" disable --all; then exit 0; fi
+    else
+      if DDEV_AUTOSTART_NONINTERACTIVE=1 bash "$cmd" disable --all; then exit 0; fi
+    fi
+    echo "⚠️  Some projects are still registered to start on boot; see the steps above to remove them."
+    exit 2
+
+ddev_version_constraint: '>= v1.24.10'

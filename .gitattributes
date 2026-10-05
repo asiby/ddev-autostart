@@ -1,0 +1,10 @@
+# Exclude files from releases/tarballs
+tests/ export-ignore
+.github/ export-ignore
+.gitattributes export-ignore
+.editorconfig export-ignore
+
+# DDEV refuses to run custom commands that contain CRLF line endings.
+commands/** text eol=lf
+*.sh text eol=lf
+*.bats text eol=lf

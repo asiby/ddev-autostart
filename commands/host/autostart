@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+#ddev-generated
+
+## Description: Start DDEV projects automatically when the computer boots
+## Usage: autostart [enable|disable|status|list] [project-name...|--running|--all]
+## Example: "ddev autostart enable" (inside a project), "ddev autostart enable site-a shop", "ddev autostart enable --running" or "ddev autostart list"
+## CanRunGlobally: true
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: ddev autostart <enable|disable|status> [project-name...]
+       ddev autostart enable --running
+       ddev autostart disable --all
+       ddev autostart list
+
+  enable    Register projects to start on boot
+            --running registers every project that is running right now
+  disable   Remove projects' boot registrations (does not stop the projects)
+            --all removes the registration of every project
+  status    Show whether projects are registered and their last result
+  list      Show every DDEV project with its autostart state
+
+Inside a project directory the project is detected automatically.
+Anywhere else, pass one or more project names, e.g. `ddev autostart enable site-a shop`.
+EOF
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+SUPPORT_DIR="${SCRIPT_DIR}/autostart.d"
+
+# shellcheck source=autostart.d/lib/resolve-approot.sh
+source "${SUPPORT_DIR}/lib/resolve-approot.sh"
+# shellcheck source=autostart.d/lib/list.sh
+source "${SUPPORT_DIR}/lib/list.sh"
+
+ACTION="${1:-}"
+case "$ACTION" in
+    enable | disable | status | list) shift ;;
+    "" | help | -h | --help) usage; exit 0 ;;
+    *) echo "❌ Error: unknown action '$ACTION'." >&2; usage >&2; exit 1 ;;
+esac
+
+# --- OS / init system detection -----------------------------------------------
+OS_TYPE="unknown"
+case "${OSTYPE:-}" in
+    linux*)
+        if [ -d /run/systemd/system ]; then
+            OS_TYPE="systemd"     # systemd is actually PID 1, not merely installed
+        elif command -v rc-service >/dev/null 2>&1; then
+            OS_TYPE="openrc"
+        fi
+        ;;
+    darwin*) OS_TYPE="launchd" ;;
+    msys* | cygwin*) OS_TYPE="windows" ;;
+esac
+
+OS_TYPE="${DDEV_AUTOSTART_PLUGIN:-$OS_TYPE}"  # manual override for testing/edge cases
+
+if [ "$OS_TYPE" = "unknown" ]; then
+    echo "❌ Error: Unsupported operating system or init system." >&2
+    exit 1
+fi
+
+PLUGIN_PATH="${SUPPORT_DIR}/plugins/${OS_TYPE}.sh"
+if [ ! -f "$PLUGIN_PATH" ]; then
+    echo "❌ Error: Plugin for '$OS_TYPE' is missing or not implemented yet." >&2
+    exit 1
+fi
+
+# shellcheck source=/dev/null
+source "$PLUGIN_PATH"
+
+# --- list: all projects, no project context needed ----------------------------
+if [ "$ACTION" = "list" ]; then
+    if [ -n "${1:-}" ]; then
+        echo "❌ Error: 'list' takes no project name." >&2
+        exit 1
+    fi
+    ddev_autostart_print_list
+    exit 0
+fi
+
+# --- Arguments ----------------------------------------------------------------
+# Names are validated as they are read, so they never contain whitespace and a
+# plain space-separated string is safe to loop over (bash 3.2 has no reliable
+# empty-array handling under `set -u`).
+NAMES=""
+OPT_ALL=""
+OPT_RUNNING=""
+for arg in "$@"; do
+    case "$arg" in
+        --all) OPT_ALL=1 ;;
+        --running) OPT_RUNNING=1 ;;
+        -*) echo "❌ Error: unknown option '$arg'." >&2; usage >&2; exit 1 ;;
+        *)
+            if ! ddev_autostart_valid_name "$arg"; then
+                echo "❌ Error: '$arg' is not a valid DDEV project name." >&2
+                exit 1
+            fi
+            case " $NAMES " in *" $arg "*) ;; *) NAMES="${NAMES:+$NAMES }$arg" ;; esac
+            ;;
+    esac
+done
+
+if [ -n "$OPT_ALL" ] && [ "$ACTION" != "disable" ]; then
+    if [ "$ACTION" = "enable" ]; then
+        echo "❌ Error: 'enable --all' is not supported: it would also start old or broken projects at every boot." >&2
+        echo "   Use 'ddev autostart enable --running' to register the projects running now." >&2
+    else
+        echo "❌ Error: --all only works with 'disable'." >&2
+    fi
+    exit 1
+fi
+if [ -n "$OPT_RUNNING" ] && [ "$ACTION" != "enable" ]; then
+    echo "❌ Error: --running only works with 'enable'." >&2
+    exit 1
+fi
+if { [ -n "$OPT_ALL" ] || [ -n "$OPT_RUNNING" ]; } && [ -n "$NAMES" ]; then
+    echo "❌ Error: use either project names or --all/--running, not both." >&2
+    exit 1
+fi
+
+# --- Which projects -------------------------------------------------------------
+if [ -n "$OPT_ALL" ]; then
+    NAMES="$(plugin_list_registered | cut -f1 | tr '\n' ' ')"
+    NAMES="${NAMES% }"
+    if [ -z "$NAMES" ]; then
+        echo "ℹ️  No projects are registered for autostart."
+        exit 0
+    fi
+elif [ -n "$OPT_RUNNING" ]; then
+    projects="$(ddev_autostart_list_projects || true)"
+    if [ -n "$projects" ] && ! printf '%s\n' "$projects" | awk -F'\t' '$3 != "-" { found = 1 } END { exit !found }'; then
+        echo "❌ Error: can't tell which projects are running (\`ddev list\` is unavailable). Is Docker running?" >&2
+        exit 1
+    fi
+    NAMES="$(printf '%s\n' "$projects" | awk -F'\t' '$3 == "running" { printf "%s%s", sep, $1; sep = " " }')"
+    if [ -z "$NAMES" ]; then
+        echo "ℹ️  No DDEV projects are running, so there is nothing to register."
+        exit 0
+    fi
+    echo "Registering the running projects: ${NAMES}"
+elif [ -z "$NAMES" ]; then
+    NAMES="${DDEV_PROJECT:-}"
+    if [ -z "$NAMES" ]; then
+        echo "❌ Error: No DDEV project detected. Run inside a project folder or specify project names." >&2
+        exit 1
+    fi
+fi
+
+# Path of a project: the current project's from DDEV's environment, any other
+# looked up by name. Empty if the project no longer exists.
+approot_of() {
+    if [ "$1" = "${DDEV_PROJECT:-}" ] && [ -n "${DDEV_APPROOT:-}" ]; then
+        printf '%s\n' "$DDEV_APPROOT"
+    else
+        ddev_autostart_resolve_approot "$1" || true
+    fi
+}
+
+# For enable, check every name before changing anything: a typo in the third
+# name shouldn't leave the first two registered and the user unsure what happened.
+if [ "$ACTION" = "enable" ]; then
+    missing=""
+    for name in $NAMES; do
+        [ -n "$(approot_of "$name")" ] || missing="$missing $name"
+    done
+    if [ -n "$missing" ]; then
+        echo "❌ Error: Could not find project(s):$missing. Check \`ddev list\` for the exact names. Nothing was changed." >&2
+        exit 1
+    fi
+fi
+
+# --- Run ------------------------------------------------------------------------
+failed=""
+count=0
+for name in $NAMES; do
+    count=$((count + 1))
+    [ "$count" -gt 1 ] && echo
+    # `disable` and `status` must still work for a project that was deleted or moved.
+    if ! "plugin_${ACTION}" "$name" "$(approot_of "$name")"; then
+        failed="$failed $name"
+    fi
+done
+
+if [ -n "$failed" ]; then
+    [ "$count" -gt 1 ] && echo "❌ Failed for:$failed" >&2
+    exit 1
+fi

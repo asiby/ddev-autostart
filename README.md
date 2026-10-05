@@ -18,13 +18,13 @@ Adds a global `ddev autostart` command that starts your DDEV projects automatica
 
 ## Installation
 
-Run this from inside **any** DDEV project (or add `--project <name>` from anywhere):
+Run this from inside any DDEV project (or add `--project <name>` from anywhere):
 
 ```bash
 ddev add-on get asiby/ddev.d
 ```
 
-No restart is needed. The command is installed into DDEV's global directory (`~/.ddev`), so it works for **every** project, not just the one you installed it from.
+No restart is needed. The command is installed into DDEV's global directory (`~/.ddev`).
 
 To update to the latest version, run the same command again.
 
@@ -33,7 +33,7 @@ To update to the latest version, run the same command again.
 | Command | Description |
 | ------- | ----------- |
 | `ddev autostart enable [project...]` | Start projects automatically on boot |
-| `ddev autostart enable --running` | Start every project that is running **right now** on boot |
+| `ddev autostart enable --running` | Start every project that is running right now on boot |
 | `ddev autostart disable [project...]` | Stop starting projects on boot (they keep running) |
 | `ddev autostart disable --all` | Stop starting every project on boot |
 | `ddev autostart status [project...]` | Show whether projects are registered and whether they started |
@@ -58,7 +58,7 @@ If any name is wrong, nothing is changed. To make your current setup come back a
 ddev autostart enable --running
 ```
 
-`--running` asks DDEV which projects are running, so Docker must be up. There is deliberately no `enable --all`: it would also register old or broken projects that can't start, slowing down every boot.
+`--running` asks DDEV which projects are running, so Docker must be up.
 
 `ddev autostart list` gives an overview of all your projects:
 
@@ -88,7 +88,7 @@ site-a   enabled    active    running  /home/me/code/site-a
 
 `enable` writes a system service at `/etc/systemd/system/ddev-autostart-<project>.service`, which is why it needs `sudo`. The service:
 
-- runs `ddev start <project>` as **your** user, never as root;
+- runs `ddev start <project>` as your user, never as root;
 - starts after Docker and waits up to about 2 minutes for it to respond;
 - runs at boot without anyone needing to log in.
 
@@ -98,7 +98,7 @@ site-a   enabled    active    running  /home/me/code/site-a
 sudo systemctl start ddev-autostart-<project>.service
 ```
 
-The service records where `ddev` and `docker` are installed, and adds only those folders to the standard system ones; it never copies your terminal's `PATH`. If you move or reinstall either to a **different location**, run `ddev autostart enable <project>` again to update it. Normal upgrades (apt, Homebrew, `ddev self-upgrade`) keep the same location and need nothing.
+The service records where `ddev` and `docker` are installed, and adds only those folders to the standard system ones. If you move or reinstall either to a different location, run `ddev autostart enable <project>` again to update it. Normal upgrades (apt, Homebrew, `ddev self-upgrade`) keep the same location and need nothing.
 
 ## Troubleshooting
 
@@ -136,7 +136,7 @@ Environment variables useful for development and testing:
 | `DDEV_AUTOSTART_UNIT_DIR` | Write systemd units to another folder instead of `/etc/systemd/system` |
 | `DDEV_AUTOSTART_NONINTERACTIVE` | Never prompt for a `sudo` password; fail with manual steps instead |
 
-The tests use [Bats](https://bats-core.readthedocs.io/): `bats ./tests/test.bats`. Where systemd is running and `sudo` needs no password, they register a **real** boot service for a temporary test project and remove it afterwards; elsewhere those checks are skipped.
+The tests use [Bats](https://bats-core.readthedocs.io/): `bats ./tests/test.bats`. Where systemd is running and `sudo` needs no password, they register a real boot service for a temporary test project and remove it afterwards; elsewhere those checks are skipped.
 
 ## Credits
 

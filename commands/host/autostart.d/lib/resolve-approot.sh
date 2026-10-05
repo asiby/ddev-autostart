@@ -110,7 +110,13 @@ ddev_autostart_resolve_approot() {
     local name="${1:-}" candidate=""
     ddev_autostart_valid_name "$name" || return 1
 
-    candidate="$(_ddev_autostart_root_from_cli "$name" || true)"
+    if [ -n "${DDEV_AUTOSTART_PROJECTS_LOADED:-}" ]; then
+        # Cache loaded by ddev_autostart_load_projects: no extra `ddev list` call.
+        candidate="$(printf '%s\n' "$DDEV_AUTOSTART_PROJECTS" |
+            awk -F'\t' -v n="$name" '$1 == n { print $2; exit }')"
+    else
+        candidate="$(_ddev_autostart_root_from_cli "$name" || true)"
+    fi
     if ddev_autostart_validate_root "$candidate"; then
         printf '%s\n' "$candidate"
         return 0
@@ -188,4 +194,16 @@ for line in sys.stdin:
         return 0
     done < <(ddev_autostart_global_dirs)
     return 0
+}
+
+# --- Cache ------------------------------------------------------------------------
+# `ddev list` is the slow part of every lookup and gets slower with more running
+# projects. Call this once in the main shell (NOT inside $(...), where the
+# variables would be lost) and every later ddev_autostart_resolve_approot reads
+# the cached rows instead of running `ddev list` again.
+# Sets DDEV_AUTOSTART_PROJECTS: the rows of ddev_autostart_list_projects.
+ddev_autostart_load_projects() {
+    [ -n "${DDEV_AUTOSTART_PROJECTS_LOADED:-}" ] && return 0
+    DDEV_AUTOSTART_PROJECTS="$(ddev_autostart_list_projects || true)"
+    DDEV_AUTOSTART_PROJECTS_LOADED=1
 }

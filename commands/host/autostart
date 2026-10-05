@@ -131,7 +131,8 @@ if [ -n "$OPT_ALL" ]; then
         exit 0
     fi
 elif [ -n "$OPT_RUNNING" ]; then
-    projects="$(ddev_autostart_list_projects || true)"
+    ddev_autostart_load_projects
+    projects="$DDEV_AUTOSTART_PROJECTS"
     if [ -n "$projects" ] && ! printf '%s\n' "$projects" | awk -F'\t' '$3 != "-" { found = 1 } END { exit !found }'; then
         echo "❌ Error: can't tell which projects are running (\`ddev list\` is unavailable). Is Docker running?" >&2
         exit 1
@@ -149,6 +150,15 @@ elif [ -z "$NAMES" ]; then
         exit 1
     fi
 fi
+
+# Fetch DDEV's project list once, but only if a name needs looking up: the
+# current project's path comes from DDEV's environment for free.
+for name in $NAMES; do
+    if [ "$name" != "${DDEV_PROJECT:-}" ] || [ -z "${DDEV_APPROOT:-}" ]; then
+        ddev_autostart_load_projects
+        break
+    fi
+done
 
 # Path of a project: the current project's from DDEV's environment, any other
 # looked up by name. Empty if the project no longer exists.

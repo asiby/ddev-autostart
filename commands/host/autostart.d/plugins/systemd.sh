@@ -19,11 +19,28 @@
 #   - Type=oneshot + RemainAfterExit: `ddev start` returns once containers are up.
 #   - Orders after docker.service when it exists, and also polls `docker info`
 #     so Docker Desktop for Linux / socket-activated daemons still work.
+#   - Rootless Docker and Podman run as a per-user service under /run/user/UID.
+#     The unit then orders after user@UID.service, which only starts at boot if
+#     the user has lingering enabled; `enable` warns when it's off.
+#   - Only files carrying _SD_MARKER are ever changed or removed, so a
+#     ddev-autostart-*.service someone else wrote is left alone.
 
 DDEV_AUTOSTART_UNIT_DIR="${DDEV_AUTOSTART_UNIT_DIR:-/etc/systemd/system}"
 
+_SD_MARKER="# Managed by ddev-autostart."
+
 _sd_unit_name() { printf 'ddev-autostart-%s.service' "$1"; }
 _sd_unit_path() { printf '%s/%s' "$DDEV_AUTOSTART_UNIT_DIR" "$(_sd_unit_name "$1")"; }
+
+# True if the unit file was written by this add-on (every version since v0.1.0
+# starts with the marker line).
+_sd_is_managed() {
+    [ -f "$1" ] && grep -qF -- "$_SD_MARKER" "$1"
+}
+
+_sd_not_ours() {
+    echo "⚠️  $1 exists but wasn't created by ddev autostart; leaving it alone." >&2
+}
 
 # Run a command as root: directly if we are root, via sudo otherwise.
 _sd_root() {
@@ -75,9 +92,35 @@ _sd_exec_escape() {
     printf '%s' "${s//\$/\$\$}"
 }
 
-# A path that can't break the unit file's double quotes.
+# A path that can't break the unit file's double quotes. systemd also treats a
+# backslash as the start of an escape sequence, so it's refused too.
 _sd_quotable() {
     case "$1" in *[\"\\]* | *$'\n'*) return 1 ;; esac
+}
+
+# A path that can also go inside the single-quoted `sh -c` script.
+_sd_shell_safe() {
+    _sd_quotable "$1" || return 1
+    case "$1" in *[\'\$\`]*) return 1 ;; esac
+}
+
+# The Docker endpoint the CLI uses right now: honours DOCKER_HOST,
+# DOCKER_CONTEXT and `docker context use`, e.g. unix:///var/run/docker.sock.
+_sd_docker_endpoint() {
+    "$1" context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null
+}
+
+# Is the user's own service manager started at boot? Rootless Docker and Podman
+# run inside it, so without lingering they only start once the user logs in.
+_sd_lingering() {
+    [ -e "/var/lib/systemd/linger/$1" ] ||
+        [ "$(loginctl show-user "$1" -p Linger --value 2>/dev/null)" = "yes" ]
+}
+
+_sd_linger_hint() {
+    echo "⚠️  Docker runs as your user (rootless Docker or Podman), and it only starts at boot"
+    echo "   if lingering is enabled for '$1'. Turn it on with:"
+    echo "     sudo loginctl enable-linger $1"
 }
 
 # The service's PATH: only the folders of the commands it runs (ddev, and docker
@@ -112,14 +155,30 @@ _sd_find_command() {
     printf '%s\n' "$bin"
 }
 
+# Arguments: NAME ROOT USER GROUP HOME DDEV_BIN DOCKER_BIN USER_RUNTIME_DIR
+# USER_RUNTIME_DIR is /run/user/UID when Docker listens there (rootless), else "".
+# DOCKER_HOST and DOCKER_CONTEXT are copied from the environment when set, so a
+# runtime chosen that way (rather than with `docker context use`, which lives in
+# ~/.docker and is found through HOME) is also used at boot.
 _sd_render_unit() {
     local name="$1" root="$2" user="$3" group="$4" home="$5" ddev_bin="$6" docker_bin="$7"
-    local docker_deps="" exec_ddev
+    local runtime_dir="${8:-}" docker_deps="" extra_env="" exec_ddev exec_docker var
     exec_ddev="$(_sd_exec_escape "$ddev_bin")"
+    exec_docker="$(_sd_exec_escape "$docker_bin")"
     if systemctl list-unit-files docker.service >/dev/null 2>&1 &&
         systemctl list-unit-files docker.service 2>/dev/null | grep -q '^docker\.service'; then
         docker_deps=$'Wants=docker.service\nAfter=docker.service'
     fi
+    if [ -n "$runtime_dir" ]; then
+        # Not Wants=: starting the user's manager is lingering's job, not ours.
+        docker_deps="${docker_deps:+${docker_deps}$'\n'}After=user@${runtime_dir##*/}.service"
+        extra_env="Environment=\"XDG_RUNTIME_DIR=$(_sd_escape "$runtime_dir")\""
+    fi
+    for var in DOCKER_HOST DOCKER_CONTEXT; do
+        if [ -n "${!var:-}" ] && _sd_quotable "${!var}"; then
+            extra_env="${extra_env:+${extra_env}$'\n'}Environment=\"${var}=$(_sd_escape "${!var}")\""
+        fi
+    done
 
     cat <<EOF
 # Managed by ddev-autostart. Do not edit; run \`ddev autostart disable ${name}\` instead.
@@ -137,9 +196,10 @@ Group=${group}
 WorkingDirectory=$(_sd_escape "$root")
 Environment="HOME=$(_sd_escape "$home")"
 Environment="PATH=$(_sd_escape "$(_sd_service_path "$ddev_bin" "$docker_bin")")"
+${extra_env}
 # Wait up to ~2 minutes for the Docker daemon to answer before starting.
 # (\$\$ is systemd's escape for a literal \$ inside Exec lines.)
-ExecStartPre=/bin/sh -c 'i=0; until docker info >/dev/null 2>&1; do i=\$\$((i+1)); [ \$\$i -ge 60 ] && exit 1; sleep 2; done'
+ExecStartPre=/bin/sh -c 'i=0; until "${exec_docker}" info >/dev/null 2>&1; do i=\$\$((i+1)); [ \$\$i -ge 60 ] && exit 1; sleep 2; done'
 ExecStart="${exec_ddev}" start ${name}
 ExecStop="${exec_ddev}" stop ${name}
 TimeoutStartSec=600
@@ -152,16 +212,20 @@ EOF
 
 plugin_enable() {
     local name="$1" root="$2"
-    local unit user group home ddev_bin docker_bin tmp
+    local unit unit_name user group home ddev_bin docker_bin tmp endpoint runtime_dir=""
 
     if [ "$(id -u)" -eq 0 ]; then
         echo "❌ Error: run this as your normal user, not root (DDEV does not run as root)." >&2
         return 1
     fi
-    case "$root" in *$'\n'*)
-        echo "❌ Error: project path contains a newline; refusing to write a unit." >&2
-        return 1 ;;
-    esac
+    if ! _sd_quotable "$root"; then
+        echo "❌ Error: the project path contains a quote, backslash or newline, which a systemd unit can't hold safely: ${root}" >&2
+        return 1
+    fi
+    if ! _sd_quotable "$HOME"; then
+        echo "❌ Error: your home folder's path contains a quote, backslash or newline: ${HOME}" >&2
+        return 1
+    fi
 
     if ! ddev_bin="$(_sd_find_command ddev)"; then
         echo "❌ Error: ddev not found in PATH." >&2
@@ -171,29 +235,57 @@ plugin_enable() {
         echo "❌ Error: ddev's path contains a quote, backslash or newline: ${ddev_bin}" >&2
         return 1
     fi
-    # The boot service runs `docker info` to wait for Docker, so it needs to find
-    # the docker command even if it lives outside the standard system folders.
+    # The boot service runs `docker info` to wait for Docker. Without the docker
+    # command it would wait two minutes and fail at every boot, so refuse.
     if ! docker_bin="$(_sd_find_command docker)"; then
-        docker_bin=""
-        echo "⚠️  Warning: the docker command isn't in your PATH; the boot service can't check that Docker is ready and will fail."
+        echo "❌ Error: the docker command isn't in your PATH, so the boot service couldn't tell when Docker is ready." >&2
+        return 1
+    fi
+    if ! _sd_shell_safe "$docker_bin"; then
+        echo "❌ Error: docker's path contains a character a systemd unit can't hold safely: ${docker_bin}" >&2
+        return 1
     fi
 
     user="$(id -un)"
     group="$(id -gn)"
     home="$HOME"
     unit="$(_sd_unit_path "$name")"
+    unit_name="$(_sd_unit_name "$name")"
 
-    if ! id -nG "$user" | tr ' ' '\n' | grep -qx docker; then
-        echo "⚠️  Warning: '$user' is not in the 'docker' group; the service may fail at boot."
+    if [ -e "$unit" ] && ! _sd_is_managed "$unit"; then
+        _sd_not_ours "$unit"
+        return 1
     fi
 
+    # Test whether Docker actually works, rather than guessing from the docker
+    # group: rootless Docker, Podman and Docker Desktop don't use that group.
+    if ! timeout 20 "$docker_bin" info >/dev/null 2>&1; then
+        echo "⚠️  Warning: Docker isn't responding right now. The service will still wait for it at boot."
+    fi
+    endpoint="$(_sd_docker_endpoint "$docker_bin")"
+    case "$endpoint" in
+        "unix:///run/user/$(id -u)/"*)
+            runtime_dir="/run/user/$(id -u)"
+            _sd_lingering "$user" || _sd_linger_hint "$user"
+            ;;
+    esac
+
     tmp="$(mktemp)"
-    _sd_render_unit "$name" "$root" "$user" "$group" "$home" "$ddev_bin" "$docker_bin" >"$tmp"
+    _sd_render_unit "$name" "$root" "$user" "$group" "$home" "$ddev_bin" "$docker_bin" "$runtime_dir" >"$tmp"
 
     if [ -f "$unit" ] && cmp -s "$tmp" "$unit"; then
         rm -f "$tmp"
-        echo "✅ ${name} is already configured to start on boot (${unit})."
-        _sd_root systemctl enable "$(_sd_unit_name "$name")" >/dev/null 2>&1 || true
+        if [ "$(systemctl is-enabled "$unit_name" 2>/dev/null)" = "enabled" ]; then
+            echo "✅ ${name} is already configured to start on boot (${unit})."
+            return 0
+        fi
+        # The unit is right, but someone disabled it: turn it back on, and say so
+        # if that fails rather than claiming it's configured.
+        if ! { _sd_require_root && _sd_root systemctl enable "$unit_name"; }; then
+            echo "❌ Error: ${unit} is installed but couldn't be enabled." >&2
+            return 1
+        fi
+        echo "✅ ${name} was installed but disabled; it's enabled again and will start on boot."
         return 0
     fi
 
@@ -201,7 +293,7 @@ plugin_enable() {
     if ! { _sd_require_root &&
         _sd_root install -D -m 0644 -o root -g root "$tmp" "$unit" &&
         _sd_root systemctl daemon-reload &&
-        _sd_root systemctl enable "$(_sd_unit_name "$name")"; }; then
+        _sd_root systemctl enable "$unit_name"; }; then
         rm -f "$tmp"
         echo "❌ Error: failed to install the systemd unit." >&2
         return 1
@@ -210,7 +302,7 @@ plugin_enable() {
 
     echo "✅ ${name} will start automatically on boot."
     echo "   Unit: ${unit}"
-    echo "   Test it now with: sudo systemctl start $(_sd_unit_name "$name")"
+    echo "   Test it now with: sudo systemctl start ${unit_name}"
 }
 
 plugin_disable() {
@@ -222,6 +314,10 @@ plugin_disable() {
     if [ ! -f "$unit" ]; then
         echo "ℹ️  ${name} is not registered for autostart; nothing to do."
         return 0
+    fi
+    if ! _sd_is_managed "$unit"; then
+        _sd_not_ours "$unit"
+        return 1
     fi
 
     echo "Removing systemd service for ${name}..."
@@ -258,6 +354,10 @@ plugin_status() {
         echo "Autostart: ❌ disabled (no unit installed)"
         return 0
     fi
+    if ! _sd_is_managed "$unit"; then
+        echo "Autostart: ⚠️  a unit with this name exists but wasn't created by ddev autostart"
+        return 0
+    fi
 
     enabled="$(systemctl is-enabled "$unit_name" 2>/dev/null || true)"
     active="$(systemctl is-active "$unit_name" 2>/dev/null || true)"
@@ -273,6 +373,9 @@ plugin_status() {
     if [ "$active" = "failed" ] || { [ -n "$result" ] && [ "$result" != "success" ]; }; then
         echo "Logs:      journalctl -u ${unit_name} -b"
     fi
+    if grep -q '^Environment="XDG_RUNTIME_DIR=' "$unit" && ! _sd_lingering "$(id -un)"; then
+        _sd_linger_hint "$(id -un)"
+    fi
 }
 
 plugin_list_registered() {
@@ -283,6 +386,7 @@ plugin_list_registered() {
         name="${base#ddev-autostart-}"
         name="${name%.service}"
         ddev_autostart_valid_name "$name" || continue
+        _sd_is_managed "$f" || continue
         enabled="$(systemctl is-enabled "$base" 2>/dev/null || true)"
         active="$(systemctl is-active "$base" 2>/dev/null || true)"
         printf '%s\t%s\t%s\n' "$name" "${enabled:-unknown}" "${active:-unknown}"

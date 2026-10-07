@@ -155,6 +155,62 @@ health_checks() {
   assert_output --partial "No projects are registered"
 }
 
+# Checks for behaviour added after the latest release. Only run against the
+# code in this checkout, so "install from release" keeps testing what users
+# actually have until the next release is published.
+unreleased_checks() {
+  local unit_file="/etc/systemd/system/${UNIT}"
+  can_test_systemd || return 0
+  cd "${TESTDIR}"
+
+  # The wait-for-Docker step calls docker by its full path.
+  DOCKERBIN="$(mktemp -d "${HOME}/tmp/dockerbin.XXXXXX")"
+  ln -s "$(command -v docker)" "${DOCKERBIN}/docker"
+  run env PATH="${DOCKERBIN}:${PATH}" ddev autostart enable
+  assert_success
+  run grep '^ExecStartPre=' "${unit_file}"
+  assert_output --partial "\"${DOCKERBIN}/docker\" info"
+
+  # A unit that's installed but was disabled behind our back is re-enabled,
+  # not reported as "already configured".
+  sudo systemctl disable "${UNIT}"
+  run env PATH="${DOCKERBIN}:${PATH}" ddev autostart enable
+  assert_success
+  assert_output --partial "enabled again"
+  run systemctl is-enabled "${UNIT}"
+  assert_output "enabled"
+  run ddev autostart disable
+  assert_success
+
+  # DOCKER_HOST set in the environment is carried into the service.
+  run env DOCKER_HOST="unix:///var/run/docker.sock" ddev autostart enable
+  assert_success
+  run grep '^Environment="DOCKER_HOST=unix:///var/run/docker.sock"$' "${unit_file}"
+  assert_success
+  run systemd-analyze verify "${unit_file}"
+  assert_success
+  run ddev autostart disable
+  assert_success
+
+  # A ddev-autostart-*.service we didn't write is never changed or removed.
+  printf '[Unit]\nDescription=Not ours\n[Service]\nType=oneshot\nExecStart=/bin/true\n' |
+    sudo tee "${unit_file}" >/dev/null
+  run ddev autostart enable
+  assert_failure
+  assert_output --partial "wasn't created by ddev autostart"
+  run ddev autostart disable
+  assert_failure
+  assert_output --partial "wasn't created by ddev autostart"
+  run ddev autostart disable --all
+  assert_success
+  assert_output --partial "No projects are registered"
+  run ddev autostart list
+  refute_output --partial "orphaned"
+  run grep -c "Not ours" "${unit_file}"
+  assert_output "1"
+  sudo rm -f "${unit_file}"
+}
+
 teardown() {
   set -eu -o pipefail
   # Never leave a boot service behind on the test machine.
@@ -181,6 +237,7 @@ teardown() {
   run ddev add-on get "${DIR}"
   assert_success
   health_checks
+  unreleased_checks
 }
 
 @test "remove add-on deletes the command and its boot services" {
@@ -215,4 +272,26 @@ teardown() {
   run ddev add-on get "${GITHUB_REPO}"
   assert_success
   health_checks
+}
+
+@test "every plugin implements the plugin contract" {
+  set -eu -o pipefail
+  local plugin fn
+  for plugin in "${DIR}"/commands/host/autostart.d/plugins/*.sh; do
+    for fn in plugin_enable plugin_disable plugin_status plugin_list_registered; do
+      run bash -c 'source "$1" && declare -F "$2" >/dev/null' _ "${plugin}" "${fn}"
+      assert_success "$(basename "${plugin}") is missing ${fn}"
+    done
+  done
+}
+
+@test "systemd plugin refuses paths a unit can't hold safely" {
+  set -eu -o pipefail
+  local lib="${DIR}/commands/host/autostart.d"
+  run bash -c 'source "$1/lib/resolve-approot.sh"; source "$1/plugins/systemd.sh"; plugin_enable demo "$2"' _ "${lib}" '/tmp/quote"here'
+  assert_failure
+  assert_output --partial "quote, backslash or newline"
+  run bash -c 'source "$1/lib/resolve-approot.sh"; source "$1/plugins/systemd.sh"; plugin_enable demo "$2"' _ "${lib}" '/tmp/back\slash'
+  assert_failure
+  assert_output --partial "quote, backslash or newline"
 }

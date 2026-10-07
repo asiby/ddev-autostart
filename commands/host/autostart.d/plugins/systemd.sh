@@ -21,7 +21,10 @@
 #     so Docker Desktop for Linux / socket-activated daemons still work.
 #   - Rootless Docker and Podman run as a per-user service under /run/user/UID.
 #     The unit then orders after user@UID.service, which only starts at boot if
-#     the user has lingering enabled; `enable` warns when it's off.
+#     the user has lingering enabled; `enable` warns when it's off. Detection
+#     covers the standard setup (an endpoint under /run/user/UID); a rootless
+#     daemon with a custom XDG_RUNTIME_DIR gets no ordering or warning, but the
+#     `docker info` wait still applies.
 #   - Only files carrying _SD_MARKER are ever changed or removed, so a
 #     ddev-autostart-*.service someone else wrote is left alone.
 
@@ -32,10 +35,17 @@ _SD_MARKER="# Managed by ddev-autostart."
 _sd_unit_name() { printf 'ddev-autostart-%s.service' "$1"; }
 _sd_unit_path() { printf '%s/%s' "$DDEV_AUTOSTART_UNIT_DIR" "$(_sd_unit_name "$1")"; }
 
-# True if the unit file was written by this add-on (every version since v0.1.0
-# starts with the marker line).
+# True if the unit file was written by this add-on: every version since v0.1.0
+# starts with the marker line. Only the first line counts, so a foreign unit that
+# merely mentions the marker somewhere else is still treated as foreign.
 _sd_is_managed() {
-    [ -f "$1" ] && grep -qF -- "$_SD_MARKER" "$1"
+    local first_line=""
+    [ -f "$1" ] || return 1
+    IFS= read -r first_line <"$1" || true
+    case "$first_line" in
+        "$_SD_MARKER"*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 _sd_not_ours() {
@@ -157,9 +167,10 @@ _sd_find_command() {
 
 # Arguments: NAME ROOT USER GROUP HOME DDEV_BIN DOCKER_BIN USER_RUNTIME_DIR
 # USER_RUNTIME_DIR is /run/user/UID when Docker listens there (rootless), else "".
-# DOCKER_HOST and DOCKER_CONTEXT are copied from the environment when set, so a
-# runtime chosen that way (rather than with `docker context use`, which lives in
-# ~/.docker and is found through HOME) is also used at boot.
+# DOCKER_HOST, DOCKER_CONTEXT and DOCKER_CONFIG are copied from the environment
+# when set, so a runtime chosen that way is also used at boot. DOCKER_CONFIG
+# matters even without the other two: it's where `docker context use` stores the
+# chosen context (default ~/.docker, found through HOME).
 _sd_render_unit() {
     local name="$1" root="$2" user="$3" group="$4" home="$5" ddev_bin="$6" docker_bin="$7"
     local runtime_dir="${8:-}" docker_deps="" extra_env="" exec_ddev exec_docker var
@@ -174,7 +185,7 @@ _sd_render_unit() {
         docker_deps="${docker_deps:+${docker_deps}$'\n'}After=user@${runtime_dir##*/}.service"
         extra_env="Environment=\"XDG_RUNTIME_DIR=$(_sd_escape "$runtime_dir")\""
     fi
-    for var in DOCKER_HOST DOCKER_CONTEXT; do
+    for var in DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG; do
         if [ -n "${!var:-}" ] && _sd_quotable "${!var}"; then
             extra_env="${extra_env:+${extra_env}$'\n'}Environment=\"${var}=$(_sd_escape "${!var}")\""
         fi

@@ -192,6 +192,17 @@ unreleased_checks() {
   run ddev autostart disable
   assert_success
 
+  # So is DOCKER_CONFIG, where `docker context use` stores the chosen context.
+  local docker_config
+  docker_config="$(mktemp -d "${HOME}/tmp/dockerconfig.XXXXXX")"
+  run env DOCKER_CONFIG="${docker_config}" ddev autostart enable
+  assert_success
+  run grep -x "Environment=\"DOCKER_CONFIG=${docker_config}\"" "${unit_file}"
+  assert_success
+  run ddev autostart disable
+  assert_success
+  rm -rf "${docker_config}"
+
   # A ddev-autostart-*.service we didn't write is never changed or removed.
   printf '[Unit]\nDescription=Not ours\n[Service]\nType=oneshot\nExecStart=/bin/true\n' |
     sudo tee "${unit_file}" >/dev/null
@@ -208,6 +219,14 @@ unreleased_checks() {
   refute_output --partial "orphaned"
   run grep -c "Not ours" "${unit_file}"
   assert_output "1"
+
+  # Only the first line counts: the marker anywhere else doesn't make it ours.
+  printf '[Unit]\n# Managed by ddev-autostart.\nDescription=Not ours either\n' |
+    sudo tee "${unit_file}" >/dev/null
+  run ddev autostart disable
+  assert_failure
+  assert_output --partial "wasn't created by ddev autostart"
+  assert_file_exists "${unit_file}"
   sudo rm -f "${unit_file}"
 }
 

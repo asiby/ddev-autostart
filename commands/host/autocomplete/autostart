@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+#ddev-generated
+#
+# Shell completion for `ddev autostart`. DDEV runs this on every Tab press as:
+#   autostart [WORD...] CURRENT
+# where CURRENT is the word being completed (an empty one arrives as ''), and
+# prints one suggestion per line.
+#
+# Nothing here is platform-specific: project names come from the shared
+# library, and registered projects from the active plugin's
+# plugin_list_registered, which every plugin must implement. A new plugin
+# therefore gets completion without changes here.
+#
+# Must stay quick and quiet: no prompts, no errors on screen, always exit 0.
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+SUPPORT_DIR="${here}/../autostart.d"
+
+[ "$#" -gt 0 ] && shift # the command name, "autostart"
+words=("$@")
+n=$#
+cur=""
+if [ "$n" -gt 0 ]; then
+    cur="${words[n - 1]}"
+fi
+[ "$cur" = "''" ] && cur=""
+
+# Print each candidate that starts with what's been typed so far.
+emit() {
+    local w
+    for w in "$@"; do
+        case "$w" in "$cur"*) printf '%s\n' "$w" ;; esac
+    done
+}
+
+# Words after the action, before the one being completed.
+typed=" "
+i=1
+while [ "$i" -lt $((n - 1)) ]; do
+    typed="${typed}${words[i]} "
+    i=$((i + 1))
+done
+
+# Print the candidates in "$@" that haven't been typed yet.
+emit_new() {
+    local w
+    for w in "$@"; do
+        case "$typed" in *" $w "*) ;; *) emit "$w" ;; esac
+    done
+}
+
+all_projects() {
+    # shellcheck source=../autostart.d/lib/resolve-approot.sh
+    . "${SUPPORT_DIR}/lib/resolve-approot.sh" 2>/dev/null || return 0
+    ddev_autostart_list_projects 2>/dev/null | cut -f1
+}
+
+registered_projects() {
+    local plugin path
+    # shellcheck source=../autostart.d/lib/resolve-approot.sh
+    . "${SUPPORT_DIR}/lib/resolve-approot.sh" 2>/dev/null || return 0
+    # shellcheck source=../autostart.d/lib/detect.sh
+    . "${SUPPORT_DIR}/lib/detect.sh" 2>/dev/null || return 0
+    plugin="$(ddev_autostart_detect_plugin)"
+    path="$(ddev_autostart_plugin_path "$SUPPORT_DIR" "$plugin")" || return 0
+    # shellcheck source=/dev/null
+    . "$path" 2>/dev/null || return 0
+    plugin_list_registered 2>/dev/null | cut -f1
+}
+
+# Completing the action itself.
+if [ "$n" -le 1 ]; then
+    emit enable disable status list --version
+    exit 0
+fi
+
+action="${words[0]}"
+case "$action" in
+    enable)
+        # --running replaces project names, so offer it only before any name.
+        case "$typed" in *" --running "*) exit 0 ;; esac
+        [ "$typed" = " " ] && emit --running
+        case "$cur" in -*) exit 0 ;; esac
+        # shellcheck disable=SC2046 # project names never contain spaces
+        emit_new $(all_projects)
+        ;;
+    disable)
+        case "$typed" in *" --all "*) exit 0 ;; esac
+        [ "$typed" = " " ] && emit --all
+        case "$cur" in -*) exit 0 ;; esac
+        # shellcheck disable=SC2046
+        emit_new $(registered_projects)
+        ;;
+    status)
+        case "$cur" in -*) exit 0 ;; esac
+        # Any project can be checked, registered or not.
+        # shellcheck disable=SC2046
+        emit_new $(all_projects)
+        ;;
+esac
+exit 0

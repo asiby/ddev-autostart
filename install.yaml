@@ -7,6 +7,9 @@ name: ddev-autostart
 global_files:
   - commands/host/autostart
   - commands/host/autostart.d
+  # Shell completion. Listed as a file, not the folder: commands/host/autocomplete
+  # is shared with other add-ons' completion scripts.
+  - commands/host/autocomplete/autostart
 
 post_install_actions:
   - |

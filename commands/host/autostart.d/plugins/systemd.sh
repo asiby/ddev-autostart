@@ -11,6 +11,9 @@
 #                                    NAME<TAB>AUTOSTART<TAB>SERVICE
 #       AUTOSTART: enabled | disabled | <init-specific word>
 #       SERVICE:   active | inactive | failed | activating | unknown
+#     Lists only the invoking user's registrations. Shell completion calls it
+#     on every Tab press, so it must be quick, never prompt or need sudo,
+#     change nothing, and print nothing else on stdout.
 #
 # Design:
 #   - A system unit (not --user), so it runs at boot without anyone logging in.

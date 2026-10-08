@@ -37,6 +37,8 @@ SUPPORT_DIR="${SCRIPT_DIR}/autostart.d"
 source "${SUPPORT_DIR}/lib/resolve-approot.sh"
 # shellcheck source=autostart.d/lib/list.sh
 source "${SUPPORT_DIR}/lib/list.sh"
+# shellcheck source=autostart.d/lib/detect.sh
+source "${SUPPORT_DIR}/lib/detect.sh"
 
 ACTION="${1:-}"
 case "$ACTION" in
@@ -46,20 +48,7 @@ case "$ACTION" in
 esac
 
 # --- OS / init system detection -----------------------------------------------
-OS_TYPE="unknown"
-case "${OSTYPE:-}" in
-    linux*)
-        if [ -d /run/systemd/system ]; then
-            OS_TYPE="systemd"     # systemd is actually PID 1, not merely installed
-        elif command -v rc-service >/dev/null 2>&1; then
-            OS_TYPE="openrc"
-        fi
-        ;;
-    darwin*) OS_TYPE="launchd" ;;
-    msys* | cygwin*) OS_TYPE="windows" ;;
-esac
-
-OS_TYPE="${DDEV_AUTOSTART_PLUGIN:-$OS_TYPE}"  # manual override for testing/edge cases
+OS_TYPE="$(ddev_autostart_detect_plugin)"
 
 # Works even on an unsupported system: it's what a bug report needs.
 if [ "$ACTION" = "--version" ]; then
@@ -76,8 +65,7 @@ if [ "$OS_TYPE" = "unknown" ]; then
     exit 1
 fi
 
-PLUGIN_PATH="${SUPPORT_DIR}/plugins/${OS_TYPE}.sh"
-if [ ! -f "$PLUGIN_PATH" ]; then
+if ! PLUGIN_PATH="$(ddev_autostart_plugin_path "$SUPPORT_DIR" "$OS_TYPE")"; then
     echo "❌ Error: Plugin for '$OS_TYPE' is missing or not implemented yet." >&2
     exit 1
 fi

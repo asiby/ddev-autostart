@@ -180,6 +180,31 @@ unreleased_checks() {
   assert_output --regexp "Plugin: +[a-z]"
   assert_output --regexp "DDEV: +v[0-9]"
 
+  # Tab completion (what Tab runs): actions, options and project names.
+  run ddev __complete autostart ""
+  assert_output --partial "enable"
+  assert_output --partial "--version"
+  run ddev __complete autostart enable ""
+  assert_output --partial "--running"
+  assert_output --partial "${PROJNAME}"
+  run ddev __complete autostart status ""
+  assert_output --partial "${PROJNAME}"
+  run ddev __complete autostart enable "${PROJNAME}" ""
+  refute_output --partial "${PROJNAME}"
+  # Options complete from a prefix, but not after a project name or twice.
+  run ddev __complete autostart enable --r
+  assert_output --partial "--running"
+  run ddev __complete autostart disable --a
+  assert_output --partial "--all"
+  run ddev __complete autostart enable "${PROJNAME}" --r
+  refute_output --partial "--running"
+  run ddev __complete autostart disable "${PROJNAME}" --a
+  refute_output --partial "--all"
+  run ddev __complete autostart enable --running --
+  refute_output --partial "--running"
+  run ddev __complete autostart disable --all --
+  refute_output --partial "--all"
+
   can_test_systemd || return 0
   cd "${TESTDIR}"
 
@@ -190,6 +215,12 @@ unreleased_checks() {
   assert_success
   run grep '^ExecStartPre=' "${unit_file}"
   assert_output --partial "\"${DOCKERBIN}/docker\" info"
+
+  # After `disable`, Tab offers the projects registered by this user (via the
+  # plugin's plugin_list_registered), so this one now appears.
+  run ddev __complete autostart disable ""
+  assert_output --partial "--all"
+  assert_output --partial "${PROJNAME}"
 
   # A unit that's installed but was disabled behind our back is re-enabled,
   # not reported as "already configured".

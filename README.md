@@ -41,6 +41,8 @@ To update to the latest version, run the same command again from the project you
 | `ddev autostart list` | Show every project and its autostart state |
 | `ddev autostart --version` | Show the installed version (include it in bug reports) |
 
+Tab completion works for the actions, their options and project names (after `disable`, only the projects you've registered).
+
 Inside a project folder, the project name is detected automatically:
 
 ```bash
@@ -128,7 +130,7 @@ Before deleting the command, uninstalling removes the boot registration of every
 
 ## Contributing
 
-Each operating system is a plugin in `commands/host/autostart.d/plugins/`. A plugin defines four functions: `plugin_enable`, `plugin_disable`, `plugin_status` and `plugin_list_registered`. See `systemd.sh` for the reference implementation.
+Each operating system is a plugin in `commands/host/autostart.d/plugins/`. A plugin defines four functions: `plugin_enable`, `plugin_disable`, `plugin_status` and `plugin_list_registered`. See `systemd.sh` for the reference implementation. Shell completion uses `plugin_list_registered` too, so a new plugin gets completion without extra work. Since it runs on every Tab press, it must list only the current user's registrations, never prompt or need `sudo`, and print nothing but its results.
 
 Every file under `commands/host/` must contain `#ddev-generated` so DDEV can update and remove it.
 

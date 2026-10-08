@@ -213,9 +213,6 @@ ddev_autostart_load_projects() {
 # <approot>/.ddev/addon-metadata/<name>/manifest.yaml. Updating or removing the
 # add-on should happen from that project. Must match `name:` in install.yaml.
 DDEV_AUTOSTART_ADDON_NAME="ddev-autostart"
-# Name used before v0.3.0. Its records must not linger: `ddev add-on remove ddev.d`
-# would delete the same files this add-on now installs.
-DDEV_AUTOSTART_LEGACY_NAME="ddev.d"
 
 # Prints the name of each project holding the add-on's install record.
 # Call ddev_autostart_load_projects first (in the main shell).
@@ -251,7 +248,6 @@ ddev_autostart_print_install_footer() {
             echo "   when uninstalling, run \`ddev add-on remove ${DDEV_AUTOSTART_ADDON_NAME}\` in each."
             ;;
     esac
-    ddev_autostart_print_legacy_warning
 }
 
 # Prints one line, NEWEST<TAB>VERSION<TAB>REPOSITORY<TAB>INSTALL_DATE<TAB>PROJECT,
@@ -299,53 +295,4 @@ ddev_autostart_print_version() {
     ddev_version="$(ddev --version 2>/dev/null | awk '{ print $NF; exit }')"
     echo "Plugin:  ${plugin}"
     echo "DDEV:    ${ddev_version:-unknown}"
-}
-
-# --- Records from the old name (ddev.d) ------------------------------------------
-# True if FILE is an install record written by this add-on under any name: it
-# lists our command among its global files. An unrelated add-on that happens to
-# be called ddev.d won't match, so it's never touched.
-_ddev_autostart_is_our_record() {
-    [ -f "$1" ] && grep -Eq '^[[:space:]]*-[[:space:]]*"?commands/host/autostart"?[[:space:]]*$' "$1"
-}
-
-# Prints PROJECT<TAB>RECORD_DIR for each project still holding a record from the
-# old name. Call ddev_autostart_load_projects first.
-ddev_autostart_legacy_records() {
-    local name root dir
-    printf '%s\n' "${DDEV_AUTOSTART_PROJECTS:-}" |
-        while IFS="$(printf '\t')" read -r name root _; do
-            if [ -z "$name" ] || [ -z "$root" ]; then continue; fi
-            dir="${root}/.ddev/addon-metadata/${DDEV_AUTOSTART_LEGACY_NAME}"
-            _ddev_autostart_is_our_record "${dir}/manifest.yaml" && printf '%s\t%s\n' "$name" "$dir"
-        done
-    return 0
-}
-
-# Run by install.yaml after installing: delete old-name records in every project,
-# so `ddev add-on remove ddev.d` can never remove this add-on's files. Only the
-# record folder is deleted; the files it lists are the ones just installed.
-ddev_autostart_migrate_legacy_records() {
-    local name dir
-    ddev_autostart_load_projects
-    ddev_autostart_legacy_records |
-        while IFS="$(printf '\t')" read -r name dir; do
-            rm -rf -- "$dir" &&
-                echo "Removed the old '${DDEV_AUTOSTART_LEGACY_NAME}' install record from project '${name}' (the add-on is now called ${DDEV_AUTOSTART_ADDON_NAME})."
-        done
-    return 0
-}
-
-# Footer addition: old-name records the install step couldn't clean up.
-ddev_autostart_print_legacy_warning() {
-    local legacy name dir
-    legacy="$(ddev_autostart_legacy_records)"
-    [ -n "$legacy" ] || return 0
-    echo
-    echo "⚠️  The add-on's old name (${DDEV_AUTOSTART_LEGACY_NAME}) is still recorded in:"
-    printf '%s\n' "$legacy" | while IFS="$(printf '\t')" read -r name dir; do
-        echo "     ${name}: rm -rf \"${dir}\""
-    done
-    echo "   Delete those folders with the commands above. Don't run \`ddev add-on remove ${DDEV_AUTOSTART_LEGACY_NAME}\`:"
-    echo "   it would also delete this add-on's files."
 }

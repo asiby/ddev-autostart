@@ -10,19 +10,6 @@ global_files:
 
 post_install_actions:
   - |
-    # No #ddev-description on purpose: DDEV then prints nothing for this step,
-    # which only speaks up when it actually removes an old record.
-    # Before v0.3.0 this add-on was called ddev.d. Its old records list the same
-    # files, so `ddev add-on remove ddev.d` would delete this version. The files
-    # are already installed when this runs, so use their own migration code.
-    for d in "$HOME/.ddev" "${XDG_CONFIG_HOME:-$HOME/.config}/ddev"; do
-      lib="$d/commands/host/autostart.d/lib/resolve-approot.sh"
-      if [ -f "$lib" ]; then
-        ( . "$lib" && ddev_autostart_migrate_legacy_records ) || true
-        break
-      fi
-    done
-  - |
     #ddev-description:Show how to use ddev autostart
     echo "ddev autostart is installed for all projects; no restart is needed. Try: ddev autostart list"
 

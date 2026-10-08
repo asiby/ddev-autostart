@@ -1,4 +1,4 @@
-name: ddev.d
+name: ddev-autostart
 
 # `ddev autostart` is a global host command: it is installed into the global DDEV
 # directory (~/.ddev) and works for every project, not just the one it was
@@ -9,6 +9,18 @@ global_files:
   - commands/host/autostart.d
 
 post_install_actions:
+  - |
+    #ddev-description:Remove install records from the add-on's old name (ddev.d)
+    # Before v0.3.0 this add-on was called ddev.d. Its old records list the same
+    # files, so `ddev add-on remove ddev.d` would delete this version. The files
+    # are already installed when this runs, so use their own migration code.
+    for d in "$HOME/.ddev" "${XDG_CONFIG_HOME:-$HOME/.config}/ddev"; do
+      lib="$d/commands/host/autostart.d/lib/resolve-approot.sh"
+      if [ -f "$lib" ]; then
+        ( . "$lib" && ddev_autostart_migrate_legacy_records ) || true
+        break
+      fi
+    done
   - |
     #ddev-description:Show how to use ddev autostart
     echo "ddev autostart is installed for all projects. Try: ddev autostart list"

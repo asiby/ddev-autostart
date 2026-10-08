@@ -19,8 +19,8 @@
 setup() {
   set -eu -o pipefail
 
-  export GITHUB_REPO=asiby/ddev.d
-  export ADDON_NAME=ddev.d
+  export GITHUB_REPO=asiby/ddev-autostart
+  export ADDON_NAME=ddev-autostart
 
   TEST_BREW_PREFIX="$(brew --prefix 2>/dev/null || true)"
   export BATS_LIB_PATH="${BATS_LIB_PATH}:${TEST_BREW_PREFIX}/lib:/usr/lib/bats"
@@ -277,6 +277,34 @@ teardown() {
   assert_success
   health_checks
   unreleased_checks
+}
+
+@test "upgrading from the old name removes old install records" {
+  set -eu -o pipefail
+  # A record left by v0.2.0 and earlier, when the add-on was called ddev.d...
+  local old="${TESTDIR}/.ddev/addon-metadata/ddev.d"
+  mkdir -p "${old}"
+  printf 'name: ddev.d\nrepository: asiby/ddev.d\nversion: v0.2.0\nglobal_files:\n    - commands/host/autostart\n    - commands/host/autostart.d\n' >"${old}/manifest.yaml"
+  # ...and an unrelated add-on that happens to use the same name.
+  local other="${HOME}/tmp/other-${PROJNAME}"
+  mkdir -p "${other}"
+  cd "${other}"
+  ddev config --project-name="${PROJNAME}-other" --project-tld=ddev.site >/dev/null
+  mkdir -p .ddev/addon-metadata/ddev.d
+  printf 'name: ddev.d\nrepository: someone/ddev.d\nglobal_files:\n    - commands/host/something-else\n' >.ddev/addon-metadata/ddev.d/manifest.yaml
+  cd "${TESTDIR}"
+
+  run ddev add-on get "${DIR}"
+  assert_success
+  assert_output --partial "Removed the old 'ddev.d' install record from project '${PROJNAME}'"
+  assert_dir_not_exists "${old}"
+  assert_file_exists "${other}/.ddev/addon-metadata/ddev.d/manifest.yaml"
+  run ddev autostart status
+  assert_success
+  refute_output --partial "old name"
+
+  ddev delete -Oy "${PROJNAME}-other" >/dev/null 2>&1 || true
+  rm -rf "${other}"
 }
 
 @test "remove add-on deletes the command and its boot services" {

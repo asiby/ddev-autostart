@@ -1,9 +1,9 @@
 [![add-on registry](https://img.shields.io/badge/DDEV-Add--on_Registry-blue)](https://addons.ddev.com)
-[![tests](https://github.com/asiby/ddev.d/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/asiby/ddev.d/actions/workflows/tests.yml?query=branch%3Amain)
-[![last commit](https://img.shields.io/github/last-commit/asiby/ddev.d)](https://github.com/asiby/ddev.d/commits)
-[![release](https://img.shields.io/github/v/release/asiby/ddev.d)](https://github.com/asiby/ddev.d/releases/latest)
+[![tests](https://github.com/asiby/ddev-autostart/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/asiby/ddev-autostart/actions/workflows/tests.yml?query=branch%3Amain)
+[![last commit](https://img.shields.io/github/last-commit/asiby/ddev-autostart)](https://github.com/asiby/ddev-autostart/commits)
+[![release](https://img.shields.io/github/v/release/asiby/ddev-autostart)](https://github.com/asiby/ddev-autostart/releases/latest)
 
-# DDEV.d
+# DDEV Autostart
 
 ## Overview
 
@@ -22,12 +22,18 @@ Adds a global `ddev autostart` command that starts your DDEV projects automatica
 Run this from inside any DDEV project (or add `--project <name>` from anywhere):
 
 ```bash
-ddev add-on get asiby/ddev.d
+ddev add-on get asiby/ddev-autostart
 ```
 
 No restart is needed. The command is installed into DDEV's global directory (`~/.ddev`).
 
 To update to the latest version, run the same command again from the project you installed it from. If you don't remember which one, `ddev autostart status` tells you at the bottom.
+
+### Upgrading from `ddev.d`
+
+Before v0.3.0 this add-on was called `ddev.d` (`asiby/ddev.d`). To upgrade, run the install command above from any project; your boot registrations are kept. The install removes the old `ddev.d` records automatically.
+
+Don't run `ddev add-on remove ddev.d` afterwards: it would also delete the new version's files. If `ddev autostart status` still reports an old record, delete the folder it names instead.
 
 ## Usage
 
@@ -119,7 +125,7 @@ Common causes: Docker took more than about 2 minutes to start, your user isn't i
 Remove the add-on **from the same project you installed it from** (DDEV keeps the add-on's install record in that project). If you don't remember which one, `ddev autostart status` or `ddev autostart list` tells you at the bottom:
 
 ```bash
-ddev add-on remove ddev.d
+ddev add-on remove ddev-autostart
 ```
 
 Before deleting the command, uninstalling removes the boot registration of every project, so nothing keeps starting on boot afterwards. It asks for your `sudo` password if needed. Where no password can be entered (for example in a script with no terminal), it leaves the registrations in place and prints the exact commands to remove them.

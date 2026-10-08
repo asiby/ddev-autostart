@@ -207,3 +207,92 @@ ddev_autostart_load_projects() {
     DDEV_AUTOSTART_PROJECTS="$(ddev_autostart_list_projects || true)"
     DDEV_AUTOSTART_PROJECTS_LOADED=1
 }
+
+# --- Where the add-on itself is recorded ----------------------------------------
+# DDEV keeps an add-on's install record in the project it was installed from, at
+# <approot>/.ddev/addon-metadata/<name>/manifest.yaml. Updating or removing the
+# add-on should happen from that project. Must match `name:` in install.yaml.
+DDEV_AUTOSTART_ADDON_NAME="ddev.d"
+
+# Prints the name of each project holding the add-on's install record.
+# Call ddev_autostart_load_projects first (in the main shell).
+ddev_autostart_install_records() {
+    local name root
+    printf '%s\n' "${DDEV_AUTOSTART_PROJECTS:-}" |
+        while IFS="$(printf '\t')" read -r name root _; do
+            if [ -z "$name" ] || [ -z "$root" ]; then continue; fi
+            [ -f "${root}/.ddev/addon-metadata/${DDEV_AUTOSTART_ADDON_NAME}/manifest.yaml" ] &&
+                printf '%s\n' "$name"
+        done
+    return 0
+}
+
+# Footer for `status` and `list`: which project to update or remove the add-on from.
+ddev_autostart_print_install_footer() {
+    local records count
+    ddev_autostart_load_projects
+    records="$(ddev_autostart_install_records)"
+    count="$(printf '%s' "$records" | grep -c . || true)"
+    echo
+    case "$count" in
+        0)
+            echo "ℹ️  Couldn't find which project the add-on was installed from (that project may have been deleted)."
+            echo "   Running \`ddev add-on get asiby/ddev.d\` in any project updates it and records it there."
+            ;;
+        1)
+            echo "ℹ️  The add-on was installed from project '${records}'. Update or remove it from there."
+            ;;
+        *)
+            echo "⚠️  The add-on is recorded in more than one project: $(printf '%s' "$records" | paste -sd, - | sed 's/,/, /g')."
+            echo "   That happens when it's updated from a different project. Update it from one of them, and"
+            echo "   when uninstalling, run \`ddev add-on remove ${DDEV_AUTOSTART_ADDON_NAME}\` in each."
+            ;;
+    esac
+}
+
+# Prints one line, NEWEST<TAB>VERSION<TAB>REPOSITORY<TAB>INSTALL_DATE<TAB>PROJECT,
+# from the most recent install record (the one whose files are in place when
+# the add-on is recorded in several projects). VERSION is the release tag DDEV
+# installed, or "-" for an install from a local folder (empty fields are "-"). Prints nothing if no
+# record is found. Call ddev_autostart_load_projects first.
+ddev_autostart_install_info() {
+    local name root manifest
+    ddev_autostart_install_records |
+        while IFS= read -r name; do
+            root="$(printf '%s\n' "${DDEV_AUTOSTART_PROJECTS:-}" |
+                awk -F'\t' -v n="$name" '$1 == n { print $2; exit }')"
+            manifest="${root}/.ddev/addon-metadata/${DDEV_AUTOSTART_ADDON_NAME}/manifest.yaml"
+            awk -v project="$name" -v q="'" '
+                function unquote(s) {
+                    sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s)
+                    if (length(s) >= 2 && (s ~ /^".*"$/ || (substr(s, 1, 1) == q && substr(s, length(s), 1) == q))) s = substr(s, 2, length(s) - 2)
+                    return s
+                }
+                /^version:/      { v = $0; sub(/^version:/, "", v); v = unquote(v) }
+                /^repository:/   { r = $0; sub(/^repository:/, "", r); r = unquote(r) }
+                /^install_date:/ { d = $0; sub(/^install_date:/, "", d); d = unquote(d) }
+                # "-" for empty fields: `read` with a tab IFS merges empty fields.
+                function f(x) { return (x == "" ? "-" : x) }
+                END { printf "%s\t%s\t%s\t%s\t%s\n", f(d), f(v), f(r), f(d), project }
+            ' "$manifest"
+        done | LC_ALL=C sort -r | head -n 1
+}
+
+# `ddev autostart --version`: what's installed, plus what a bug report needs.
+ddev_autostart_print_version() {
+    local plugin="$1" info version repo date project ddev_version
+    ddev_autostart_load_projects
+    info="$(ddev_autostart_install_info)"
+    IFS="$(printf '\t')" read -r _ version repo date project <<<"$info" || true
+    date="${date%%T*}"
+    if [ -z "$info" ]; then
+        echo "ddev autostart (version unknown: couldn't find the add-on's install record)"
+    elif [ "$version" != "-" ]; then
+        echo "ddev autostart ${version} (${repo}, installed ${date} from project '${project}')"
+    else
+        echo "ddev autostart (development copy from ${repo}, installed ${date} from project '${project}')"
+    fi
+    ddev_version="$(ddev --version 2>/dev/null | awk '{ print $NF; exit }')"
+    echo "Plugin:  ${plugin}"
+    echo "DDEV:    ${ddev_version:-unknown}"
+}

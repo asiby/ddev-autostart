@@ -186,6 +186,7 @@ _sd_render_unit() {
         extra_env="Environment=\"XDG_RUNTIME_DIR=$(_sd_escape "$runtime_dir")\""
     fi
     for var in DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG; do
+        # plugin_enable has already refused values _sd_quotable rejects.
         if [ -n "${!var:-}" ] && _sd_quotable "${!var}"; then
             extra_env="${extra_env:+${extra_env}$'\n'}Environment=\"${var}=$(_sd_escape "${!var}")\""
         fi
@@ -237,6 +238,16 @@ plugin_enable() {
         echo "❌ Error: your home folder's path contains a quote, backslash or newline: ${HOME}" >&2
         return 1
     fi
+    # These select which Docker the CLI talks to, and are copied into the unit.
+    # Refuse rather than drop a value the unit can't hold: dropping it would make
+    # the boot service use a different Docker than this terminal.
+    local var
+    for var in DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG; do
+        if [ -n "${!var:-}" ] && ! _sd_quotable "${!var}"; then
+            echo "❌ Error: ${var} contains a quote, backslash or newline, which a systemd unit can't hold safely: ${!var}" >&2
+            return 1
+        fi
+    done
 
     if ! ddev_bin="$(_sd_find_command ddev)"; then
         echo "❌ Error: ddev not found in PATH." >&2

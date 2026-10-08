@@ -6,7 +6,7 @@
 # has registered, so it also catches "orphans": boot services whose project
 # was deleted or renamed and will now fail on every boot.
 #
-# Needs: ddev_autostart_list_projects (lib/resolve-approot.sh)
+# Needs: ddev_autostart_load_projects (lib/resolve-approot.sh)
 #        plugin_list_registered       (the active plugin)
 # Portable to macOS: bash 3.2 (no associative arrays) and BSD awk.
 
@@ -15,7 +15,8 @@ ddev_autostart_print_list() {
 
     projects="$(mktemp)"
     registered="$(mktemp)"
-    ddev_autostart_list_projects >"$projects" 2>/dev/null || true
+    ddev_autostart_load_projects
+    printf '%s\n' "${DDEV_AUTOSTART_PROJECTS:-}" >"$projects"
     plugin_list_registered >"$registered" 2>/dev/null || true
 
     # Row: PROJECT  AUTOSTART  SERVICE  DDEV  APPROOT

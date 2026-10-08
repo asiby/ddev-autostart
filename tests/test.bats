@@ -160,6 +160,26 @@ health_checks() {
 # actually have until the next release is published.
 unreleased_checks() {
   local unit_file="/etc/systemd/system/${UNIT}"
+
+  # status and list name the project the add-on was installed from (this one),
+  # from inside the project and from anywhere else.
+  cd "${TESTDIR}"
+  run ddev autostart status
+  assert_success
+  assert_output --partial "installed from project '${PROJNAME}'"
+  cd "${HOME}"
+  run ddev autostart list
+  assert_success
+  assert_output --partial "installed from project '${PROJNAME}'"
+
+  # --version reports this checkout as a development copy, plus plugin and DDEV.
+  run ddev autostart --version
+  assert_success
+  assert_output --partial "development copy from ${DIR}"
+  assert_output --partial "from project '${PROJNAME}'"
+  assert_output --regexp "Plugin: +[a-z]"
+  assert_output --regexp "DDEV: +v[0-9]"
+
   can_test_systemd || return 0
   cd "${TESTDIR}"
 
@@ -313,4 +333,8 @@ teardown() {
   run bash -c 'source "$1/lib/resolve-approot.sh"; source "$1/plugins/systemd.sh"; plugin_enable demo "$2"' _ "${lib}" '/tmp/back\slash'
   assert_failure
   assert_output --partial "quote, backslash or newline"
+  # A Docker setting the unit can't hold is refused, not silently dropped.
+  run env DOCKER_CONFIG='/tmp/docker\config' bash -c 'source "$1/lib/resolve-approot.sh"; source "$1/plugins/systemd.sh"; plugin_enable demo /tmp' _ "${lib}"
+  assert_failure
+  assert_output --partial "DOCKER_CONFIG contains a quote, backslash or newline"
 }

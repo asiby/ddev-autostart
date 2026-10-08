@@ -13,6 +13,13 @@ body:
           required: true
   - type: textarea
     attributes:
+      label: Version
+      description: Paste the output of `ddev autostart --version`.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    attributes:
       label: Expected Behavior
       description: What did you expect to happen?
     validations:

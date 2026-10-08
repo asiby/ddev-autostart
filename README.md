@@ -27,7 +27,7 @@ ddev add-on get asiby/ddev.d
 
 No restart is needed. The command is installed into DDEV's global directory (`~/.ddev`).
 
-To update to the latest version, run the same command again.
+To update to the latest version, run the same command again from the project you installed it from. If you don't remember which one, `ddev autostart status` tells you at the bottom.
 
 ## Usage
 
@@ -39,6 +39,7 @@ To update to the latest version, run the same command again.
 | `ddev autostart disable --all` | Stop starting every project on boot |
 | `ddev autostart status [project...]` | Show whether projects are registered and whether they started |
 | `ddev autostart list` | Show every project and its autostart state |
+| `ddev autostart --version` | Show the installed version (include it in bug reports) |
 
 Inside a project folder, the project name is detected automatically:
 
@@ -115,7 +116,7 @@ Common causes: Docker took more than about 2 minutes to start, your user isn't i
 
 ## Uninstalling
 
-Remove the add-on **from the same project you installed it from** (DDEV keeps the add-on's install record in that project):
+Remove the add-on **from the same project you installed it from** (DDEV keeps the add-on's install record in that project). If you don't remember which one, `ddev autostart status` or `ddev autostart list` tells you at the bottom:
 
 ```bash
 ddev add-on remove ddev.d

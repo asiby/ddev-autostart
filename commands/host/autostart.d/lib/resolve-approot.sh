@@ -276,6 +276,9 @@ ddev_autostart_install_info() {
                 END { printf "%s\t%s\t%s\t%s\t%s\n", f(d), f(v), f(r), f(d), project }
             ' "$manifest"
         done | LC_ALL=C sort -r | head -n 1
+    # Newest by string order of install_date. DDEV writes it in local time with
+    # its offset (RFC 3339), so two installs a few hours apart across a
+    # daylight-saving change could sort wrongly. Fine for a diagnostic command.
 }
 
 # `ddev autostart --version`: what's installed, plus what a bug report needs.

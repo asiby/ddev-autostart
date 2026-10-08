@@ -94,6 +94,8 @@ site-a   enabled    active    running  /home/me/code/site-a
 - starts after Docker and waits up to about 2 minutes for it to respond;
 - runs at boot without anyone needing to log in.
 
+Registrations belong to the Linux user who made them. On a shared machine, other users' registrations are left alone by every command, including uninstalling.
+
 `enable` doesn't start the project now, and `disable` doesn't stop it; they only change what happens at the next boot. To try a project's boot service without rebooting:
 
 ```bash

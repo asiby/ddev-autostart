@@ -240,6 +240,27 @@ unreleased_checks() {
   run grep -c "Not ours" "${unit_file}"
   assert_output "1"
 
+  # A unit this add-on wrote for another Linux user is never changed or removed:
+  # not by enable, disable, disable --all (which uninstalling uses) or list.
+  printf '# Managed by ddev-autostart. Do not edit.\n[Unit]\nDescription=Another user\n[Service]\nType=oneshot\nUser=nobody\nExecStart=/bin/true\n' |
+    sudo tee "${unit_file}" >/dev/null
+  run ddev autostart enable
+  assert_failure
+  assert_output --partial "registered by user 'nobody', not you"
+  run ddev autostart disable
+  assert_failure
+  assert_output --partial "registered by user 'nobody', not you"
+  run ddev autostart disable --all
+  assert_success
+  assert_output --partial "No projects are registered"
+  run ddev autostart status
+  assert_output --partial "registered by user 'nobody', not you"
+  run ddev autostart list
+  assert_output --regexp "${PROJNAME}[[:space:]]+disabled"
+  refute_output --partial "orphaned"
+  run grep -c "Another user" "${unit_file}"
+  assert_output "1"
+
   # Only the first line counts: the marker anywhere else doesn't make it ours.
   printf '[Unit]\n# Managed by ddev-autostart.\nDescription=Not ours either\n' |
     sudo tee "${unit_file}" >/dev/null

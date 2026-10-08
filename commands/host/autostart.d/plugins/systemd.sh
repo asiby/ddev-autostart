@@ -27,6 +27,13 @@
 #     `docker info` wait still applies.
 #   - Only files carrying _SD_MARKER are ever changed or removed, so a
 #     ddev-autostart-*.service someone else wrote is left alone.
+#   - Units live in one machine-wide folder, but registrations belong to a Linux
+#     user (the unit's User= line). Commands only change the invoking user's
+#     units, so one user's `enable`, `disable --all` or uninstall can't
+#     overwrite or remove another user's. Two users therefore can't both
+#     register a project with the same name; on a shared Docker daemon those
+#     projects couldn't run at the same time anyway (container names are
+#     ddev-<project>-*).
 
 DDEV_AUTOSTART_UNIT_DIR="${DDEV_AUTOSTART_UNIT_DIR:-/etc/systemd/system}"
 
@@ -50,6 +57,20 @@ _sd_is_managed() {
 
 _sd_not_ours() {
     echo "⚠️  $1 exists but wasn't created by ddev autostart; leaving it alone." >&2
+}
+
+# The Linux user a unit runs as (its User= line), as written by _sd_render_unit.
+_sd_unit_owner() {
+    awk -F= '/^User=/ { print $2; exit }' "$1" 2>/dev/null
+}
+
+# True if the unit was written by this add-on for the invoking user.
+_sd_is_mine() {
+    _sd_is_managed "$1" && [ "$(_sd_unit_owner "$1")" = "$(id -un)" ]
+}
+
+_sd_not_mine() {
+    echo "⚠️  $1 is registered by user '$(_sd_unit_owner "$1")', not you; leaving it alone." >&2
 }
 
 # Run a command as root: directly if we are root, via sudo otherwise.
@@ -278,6 +299,11 @@ plugin_enable() {
         _sd_not_ours "$unit"
         return 1
     fi
+    if [ -e "$unit" ] && ! _sd_is_mine "$unit"; then
+        _sd_not_mine "$unit"
+        echo "   Another user already registered a project named '${name}' for autostart." >&2
+        return 1
+    fi
 
     # Test whether Docker actually works, rather than guessing from the docker
     # group: rootless Docker, Podman and Docker Desktop don't use that group.
@@ -341,6 +367,10 @@ plugin_disable() {
         _sd_not_ours "$unit"
         return 1
     fi
+    if ! _sd_is_mine "$unit"; then
+        _sd_not_mine "$unit"
+        return 1
+    fi
 
     echo "Removing systemd service for ${name}..."
     if ! _sd_require_root; then
@@ -349,7 +379,11 @@ plugin_disable() {
     fi
     # Deliberately no --now: stopping the unit would run `ddev stop` on a
     # project the user may be actively working in.
-    _sd_root systemctl disable "$unit_name" >/dev/null 2>&1 || true
+    # Removing the file matters most, so carry on if disabling fails, but say so:
+    # an unusual setup could keep a stale enablement link.
+    if ! _sd_root systemctl disable "$unit_name" >/dev/null 2>&1; then
+        echo "⚠️  Warning: couldn't disable ${unit_name}; removing the unit file anyway." >&2
+    fi
     if ! _sd_root rm -f "$unit"; then
         echo "❌ Error: could not remove ${unit}." >&2
         _sd_manual_removal "$name" >&2
@@ -380,6 +414,10 @@ plugin_status() {
         echo "Autostart: ⚠️  a unit with this name exists but wasn't created by ddev autostart"
         return 0
     fi
+    if ! _sd_is_mine "$unit"; then
+        echo "Autostart: ⚠️  registered by user '$(_sd_unit_owner "$unit")', not you"
+        return 0
+    fi
 
     enabled="$(systemctl is-enabled "$unit_name" 2>/dev/null || true)"
     active="$(systemctl is-active "$unit_name" 2>/dev/null || true)"
@@ -408,7 +446,7 @@ plugin_list_registered() {
         name="${base#ddev-autostart-}"
         name="${name%.service}"
         ddev_autostart_valid_name "$name" || continue
-        _sd_is_managed "$f" || continue
+        _sd_is_mine "$f" || continue
         enabled="$(systemctl is-enabled "$base" 2>/dev/null || true)"
         active="$(systemctl is-active "$base" 2>/dev/null || true)"
         printf '%s\t%s\t%s\n' "$name" "${enabled:-unknown}" "${active:-unknown}"

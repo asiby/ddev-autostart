@@ -29,12 +29,6 @@ No restart is needed. The command is installed into DDEV's global directory (`~/
 
 To update to the latest version, run the same command again from the project you installed it from. If you don't remember which one, `ddev autostart status` tells you at the bottom.
 
-### Upgrading from `ddev.d`
-
-Before v0.3.0 this add-on was called `ddev.d` (`asiby/ddev.d`). To upgrade, run the install command above from any project; your boot registrations are kept. The install removes the old `ddev.d` records automatically.
-
-Don't run `ddev add-on remove ddev.d` afterwards: it would also delete the new version's files. If `ddev autostart status` still reports an old record, delete the folder it names instead.
-
 ## Usage
 
 | Command | Description |

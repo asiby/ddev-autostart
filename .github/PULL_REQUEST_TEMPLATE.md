@@ -17,7 +17,7 @@
 <!-- If this PR changes logic, consider adding additional steps or context to the instructions below. -->
 
 ```bash
-ddev add-on get asiby/ddev.d --pr REPLACE_ME_WITH_THIS_PR_NUMBER
+ddev add-on get asiby/ddev-autostart --pr REPLACE_ME_WITH_THIS_PR_NUMBER
 ddev restart
 ```
 

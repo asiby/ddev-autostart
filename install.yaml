@@ -10,7 +10,8 @@ global_files:
 
 post_install_actions:
   - |
-    #ddev-description:Remove install records from the add-on's old name (ddev.d)
+    # No #ddev-description on purpose: DDEV then prints nothing for this step,
+    # which only speaks up when it actually removes an old record.
     # Before v0.3.0 this add-on was called ddev.d. Its old records list the same
     # files, so `ddev add-on remove ddev.d` would delete this version. The files
     # are already installed when this runs, so use their own migration code.
@@ -23,7 +24,7 @@ post_install_actions:
     done
   - |
     #ddev-description:Show how to use ddev autostart
-    echo "ddev autostart is installed for all projects. Try: ddev autostart list"
+    echo "ddev autostart is installed for all projects; no restart is needed. Try: ddev autostart list"
 
 removal_actions:
   - |

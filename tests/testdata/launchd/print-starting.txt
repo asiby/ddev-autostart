@@ -1,0 +1,80 @@
+gui/501/ddev-autostart.site = {
+	active count = 1
+	path = /Users/me/Library/LaunchAgents/ddev-autostart.site.plist
+	type = LaunchAgent
+	state = xpcproxy
+
+	program = /bin/sh
+	arguments = {
+		/bin/sh
+		-c
+		if mkdir -p "${4%/*}" 2>/dev/null && : >>"$4" 2>/dev/null; then exec >>"$4" 2>&1; fi; echo "== $(date): ddev start $3"; i=0; until "$1" info >/dev/null 2>&1; do i=$((i+1)); if [ "$i" -ge 150 ]; then echo "Docker did not respond within 5 minutes." >&2; exit 1; fi; sleep 2; done; exec "$2" start "$3"
+		ddev-autostart
+		/opt/homebrew/bin/docker
+		/opt/homebrew/bin/ddev
+		site
+		/Users/me/Library/Logs/ddev-autostart/site.log
+	}
+
+	working directory = /Users/me/Sites/site
+
+	inherited environment = {
+		DISPLAY => /var/run/com.apple.launchd.XXXXXXXXXX/org.xquartz:0
+		SSH_AUTH_SOCK => /var/run/com.apple.launchd.XXXXXXXXXX/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		PATH => /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+		HOME => /Users/me
+		XPC_SERVICE_NAME => ddev-autostart.site
+	}
+
+	domain = gui/501 [100016]
+	asid = 100016
+	minimum runtime = 10
+	exit timeout = 5
+	runs = 1
+	pid = 82694
+	immediate reason = speculative
+	forks = 0
+	execs = 0
+	initialized = 1
+	trampolined = 0
+	started suspended = 0
+	proxy started suspended = 0
+	checked allocations = 0 (queried = 0)
+	checked allocations reason = no host
+	checked allocations flags = 0x0
+	last exit code = (never exited)
+
+	resource coalition = {
+		ID = 177765
+		type = resource
+		state = active
+		active count = 1
+		name = ddev-autostart.site
+	}
+
+	jetsam coalition = {
+		ID = 177766
+		type = jetsam
+		state = active
+		active count = 1
+		name = ddev-autostart.site
+	}
+
+	spawn type = daemon (3)
+	jetsam priority = 40
+	jetsam memory limit (active) = (unlimited)
+	jetsam memory limit (inactive) = (unlimited)
+	jetsamproperties category = daemon
+	jetsam thread limit = 32
+	cpumon = default
+
+	properties = runatload | abandon process group | inferred program
+}

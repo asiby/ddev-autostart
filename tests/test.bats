@@ -215,6 +215,9 @@ unreleased_checks() {
   assert_success
   run grep '^ExecStartPre=' "${unit_file}"
   assert_output --partial "\"${DOCKERBIN}/docker\" info"
+  # At boot no one can type a sudo password, so DDEV mustn't ask for one.
+  run grep -x 'Environment="DDEV_NONINTERACTIVE=true"' "${unit_file}"
+  assert_success
 
   # After `disable`, Tab offers the projects registered by this user (via the
   # plugin's plugin_list_registered), so this one now appears.
@@ -389,4 +392,119 @@ teardown() {
   run env DOCKER_CONFIG='/tmp/docker\config' bash -c 'source "$1/lib/resolve-approot.sh"; source "$1/plugins/systemd.sh"; plugin_enable demo /tmp' _ "${lib}"
   assert_failure
   assert_output --partial "DOCKER_CONFIG contains a quote, backslash or newline"
+}
+
+@test "launchd plugin writes, lists and removes a LaunchAgent (fake launchctl)" {
+  set -eu -o pipefail
+  local lib="${DIR}/commands/host/autostart.d" fake agent
+  fake="$(mktemp -d "${HOME}/tmp/launchd.XXXXXX")"
+  mkdir -p "${fake}/bin" "${fake}/home"
+  # Nothing is loaded and nothing is turned off; every call is recorded.
+  cat >"${fake}/bin/launchctl" <<'EOF'
+#!/bin/sh
+echo "$*" >>"$(dirname "$0")/calls"
+case "$1" in
+  print) [ -f "$(dirname "$0")/print" ] || exit 113; cat "$(dirname "$0")/print" ;;
+  print-disabled)
+    if [ -f "$(dirname "$0")/disabled" ]; then cat "$(dirname "$0")/disabled"; else echo "disabled services = {"; echo "}"; fi ;;
+esac
+EOF
+  chmod +x "${fake}/bin/launchctl"
+  local call='source "$1/lib/resolve-approot.sh"; source "$1/plugins/launchd.sh"; shift; "$@"'
+  launchd() { env HOME="${fake}/home" PATH="${fake}/bin:${PATH}" bash -c "${call}" _ "${lib}" "$@"; }
+  agent="${fake}/home/Library/LaunchAgents/ddev-autostart.demo.plist"
+
+  run launchd plugin_enable demo "${TESTDIR}"
+  assert_success
+  assert_output --partial "will start automatically when you log in"
+  assert_file_exists "${agent}"
+  run sed -n 2p "${agent}"
+  assert_output --partial "<!-- Managed by ddev-autostart."
+  if command -v python3 >/dev/null 2>&1; then
+    run python3 -c 'import plistlib, sys
+p = plistlib.load(open(sys.argv[1], "rb"))
+assert p["Label"] == "ddev-autostart.demo" and p["WorkingDirectory"] == sys.argv[2]
+assert p["RunAtLoad"] and p["AbandonProcessGroup"] and p["ProgramArguments"][6] == "demo"
+assert p["EnvironmentVariables"]["DDEV_NONINTERACTIVE"] == "true"' "${agent}" "${TESTDIR}"
+    assert_success
+  fi
+  # "--" isn't allowed in an XML comment; the name must not end up in one.
+  if command -v python3 >/dev/null 2>&1; then
+    run launchd plugin_enable my--site "${TESTDIR}"
+    assert_success
+    run python3 -c 'import plistlib, sys; plistlib.load(open(sys.argv[1], "rb"))' \
+      "${fake}/home/Library/LaunchAgents/ddev-autostart.my--site.plist"
+    assert_success
+    rm -f "${fake}/home/Library/LaunchAgents/ddev-autostart.my--site.plist"
+  fi
+  # enable must not load the agent: loading runs `ddev start` right away.
+  run grep -E '^(bootstrap|kickstart)' "${fake}/bin/calls"
+  assert_failure
+
+  run launchd plugin_list_registered
+  assert_output "$(printf 'demo\tenabled\tinactive')"
+
+  # How each `launchctl print` result is reported (output format of macOS 13+).
+  local state expected
+  for state in "last exit code = 0:active" "last exit code = 78: EX_CONFIG:failed" \
+    "last terminating signal = Terminated: 15:failed"; do
+    expected="${state##*:}"
+    printf 'gui/501/ddev-autostart.demo = {\n\tstate = not running\n\t%s\n}\n' "${state%:*}" >"${fake}/bin/print"
+    run launchd plugin_list_registered
+    assert_output "$(printf 'demo\tenabled\t%s' "${expected}")"
+  done
+  rm -f "${fake}/bin/print"
+
+  # Real output captured on macOS 26 (tests/testdata/launchd), project "site".
+  local fixtures="${DIR}/tests/testdata/launchd"
+  cp "${agent}" "${fake}/home/Library/LaunchAgents/ddev-autostart.site.plist"
+  for state in print-starting:activating print-running:activating \
+    print-signal:failed print-exit-78:failed; do
+    cp "${fixtures}/${state%%:*}.txt" "${fake}/bin/print"
+    run launchd plugin_list_registered
+    assert_line "$(printf 'site\tenabled\t%s' "${state##*:}")"
+  done
+  rm -f "${fake}/bin/print"
+  cp "${fixtures}/print-disabled-off.txt" "${fake}/bin/disabled"
+  run launchd plugin_list_registered
+  assert_line "$(printf 'site\tdisabled\tinactive')"
+  cp "${fixtures}/print-disabled-on.txt" "${fake}/bin/disabled"
+  run launchd plugin_list_registered
+  assert_line "$(printf 'site\tenabled\tinactive')"
+  rm -f "${fake}/bin/disabled" "${fake}/home/Library/LaunchAgents/ddev-autostart.site.plist"
+
+  # A job still running (here: just started) is left to finish: no bootout, and
+  # its log is kept since the job is still writing to it.
+  local log="${fake}/home/Library/Logs/ddev-autostart/demo.log"
+  mkdir -p "${log%/*}" && echo "starting" >"${log}"
+  cp "${fixtures}/print-starting.txt" "${fake}/bin/print"
+  : >"${fake}/bin/calls"
+  run launchd plugin_disable demo
+  assert_success
+  assert_output --partial "left to finish"
+  assert_file_not_exists "${agent}"
+  assert_file_exists "${log}"
+  run grep '^bootout' "${fake}/bin/calls"
+  assert_failure
+  rm -f "${fake}/bin/print" "${log}"
+  run launchd plugin_enable demo "${TESTDIR}"
+  assert_success
+
+  # DDEV_XDG_CONFIG_HOME moves DDEV's global config; the job needs it too.
+  if command -v python3 >/dev/null 2>&1; then
+    run env DDEV_XDG_CONFIG_HOME=/tmp/elsewhere HOME="${fake}/home" PATH="${fake}/bin:${PATH}" \
+      bash -c "${call}" _ "${lib}" plugin_enable xdg "${TESTDIR}"
+    assert_success
+    run python3 -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["EnvironmentVariables"]["DDEV_XDG_CONFIG_HOME"])' \
+      "${fake}/home/Library/LaunchAgents/ddev-autostart.xdg.plist"
+    assert_output "/tmp/elsewhere"
+    rm -f "${fake}/home/Library/LaunchAgents/ddev-autostart.xdg.plist"
+  fi
+
+  run launchd plugin_disable demo
+  assert_success
+  assert_file_not_exists "${agent}"
+  run launchd plugin_list_registered
+  assert_output ""
+  rm -rf "${fake}"
 }

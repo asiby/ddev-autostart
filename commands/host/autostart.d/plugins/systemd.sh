@@ -192,7 +192,8 @@ _sd_find_command() {
 # Arguments: NAME ROOT USER GROUP HOME DDEV_BIN DOCKER_BIN USER_RUNTIME_DIR
 # USER_RUNTIME_DIR is /run/user/UID when Docker listens there (rootless), else "".
 # DOCKER_HOST, DOCKER_CONTEXT and DOCKER_CONFIG are copied from the environment
-# when set, so a runtime chosen that way is also used at boot. DOCKER_CONFIG
+# when set, so a runtime chosen that way is also used at boot. So is
+# DDEV_XDG_CONFIG_HOME, which moves DDEV's global config (and project list). DOCKER_CONFIG
 # matters even without the other two: it's where `docker context use` stores the
 # chosen context (default ~/.docker, found through HOME).
 _sd_render_unit() {
@@ -209,7 +210,7 @@ _sd_render_unit() {
         docker_deps="${docker_deps:+${docker_deps}$'\n'}After=user@${runtime_dir##*/}.service"
         extra_env="Environment=\"XDG_RUNTIME_DIR=$(_sd_escape "$runtime_dir")\""
     fi
-    for var in DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG; do
+    for var in DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DDEV_XDG_CONFIG_HOME; do
         # plugin_enable has already refused values _sd_quotable rejects.
         if [ -n "${!var:-}" ] && _sd_quotable "${!var}"; then
             extra_env="${extra_env:+${extra_env}$'\n'}Environment=\"${var}=$(_sd_escape "${!var}")\""
@@ -232,6 +233,9 @@ Group=${group}
 WorkingDirectory=$(_sd_escape "$root")
 Environment="HOME=$(_sd_escape "$home")"
 Environment="PATH=$(_sd_escape "$(_sd_service_path "$ddev_bin" "$docker_bin")")"
+# No one is there to type a sudo password: DDEV then skips editing /etc/hosts
+# (needed only when a hostname doesn't resolve yet) instead of failing.
+Environment="DDEV_NONINTERACTIVE=true"
 ${extra_env}
 # Wait up to ~2 minutes for the Docker daemon to answer before starting.
 # (\$\$ is systemd's escape for a literal \$ inside Exec lines.)
@@ -266,7 +270,7 @@ plugin_enable() {
     # Refuse rather than drop a value the unit can't hold: dropping it would make
     # the boot service use a different Docker than this terminal.
     local var
-    for var in DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG; do
+    for var in DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DDEV_XDG_CONFIG_HOME; do
         if [ -n "${!var:-}" ] && ! _sd_quotable "${!var}"; then
             echo "❌ Error: ${var} contains a quote, backslash or newline, which a systemd unit can't hold safely: ${!var}" >&2
             return 1

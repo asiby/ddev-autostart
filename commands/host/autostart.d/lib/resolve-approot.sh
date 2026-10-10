@@ -14,11 +14,19 @@ ddev_autostart_valid_name() {
     [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
 }
 
-# DDEV's global config dir: ~/.ddev by default, $XDG_CONFIG_HOME/ddev on some setups.
-# Prints every candidate that exists, preferred first.
+# DDEV's global config dir, as DDEV picks it: only $DDEV_XDG_CONFIG_HOME/ddev
+# when that's set (an old ~/.ddev would list projects DDEV no longer knows);
+# else ~/.ddev, or ~/.config/ddev on Linux. ($XDG_CONFIG_HOME/ddev is kept for
+# older setups.) Prints every candidate that exists, preferred first.
 ddev_autostart_global_dirs() {
-    local d
-    for d in "${HOME}/.ddev" "${XDG_CONFIG_HOME:-${HOME}/.config}/ddev"; do
+    local d xdg="${DDEV_XDG_CONFIG_HOME:-}"
+    case "$xdg" in "~"*) xdg="${HOME}${xdg#\~}" ;; esac
+    if [ -n "$xdg" ]; then
+        [ -d "${xdg}/ddev" ] && printf '%s\n' "${xdg}/ddev"
+        return 0
+    fi
+    for d in "${HOME}/.ddev" "${HOME}/.config/ddev" \
+        "${XDG_CONFIG_HOME:-${HOME}/.config}/ddev"; do
         [ -d "$d" ] && printf '%s\n' "$d"
     done
     return 0

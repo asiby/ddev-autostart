@@ -19,7 +19,7 @@ post_install_actions:
 removal_actions:
   - |
     #ddev-interactive
-    #ddev-description:Remove boot registrations for all projects
+    #ddev-description:Remove autostart registrations for all projects
     #ddev-warning-exit-code: 2
     # Removal actions run BEFORE DDEV deletes the add-on's files, so the command
     # is still here and its own plugin code does the cleanup on any platform.
@@ -27,7 +27,8 @@ removal_actions:
     # `ddev start` directly, so they'd keep starting projects with nothing
     # left to manage them.
     cmd=""
-    for d in "$HOME/.ddev" "${XDG_CONFIG_HOME:-$HOME/.config}/ddev"; do
+    x="${DDEV_XDG_CONFIG_HOME:-}"; case "$x" in "~"*) x="$HOME${x#\~}" ;; esac
+    for d in ${x:+"$x/ddev"} "$HOME/.ddev" "$HOME/.config/ddev" "${XDG_CONFIG_HOME:-$HOME/.config}/ddev"; do
       if [ -f "$d/commands/host/autostart" ]; then cmd="$d/commands/host/autostart"; break; fi
     done
     [ -n "$cmd" ] || exit 0
@@ -42,7 +43,7 @@ removal_actions:
     else
       if DDEV_AUTOSTART_NONINTERACTIVE=1 bash "$cmd" disable --all; then exit 0; fi
     fi
-    echo "⚠️  Some projects are still registered to start on boot; see the steps above to remove them."
+    echo "⚠️  Some projects are still registered to start automatically; see the steps above to remove them."
     exit 2
 
 ddev_version_constraint: '>= v1.24.10'

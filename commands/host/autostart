@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #ddev-generated
 
-## Description: Start DDEV projects automatically when the computer boots
+## Description: Start DDEV projects automatically at boot (Linux) or login (macOS)
 ## Usage: autostart [enable|disable|status|list] [project-name...|--running|--all] | --version
 ## Example: "ddev autostart enable" (inside a project), "ddev autostart enable site-a shop", "ddev autostart enable --running" or "ddev autostart list"
 ## CanRunGlobally: true
@@ -16,9 +16,9 @@ Usage: ddev autostart <enable|disable|status> [project-name...]
        ddev autostart list
        ddev autostart --version
 
-  enable    Register projects to start on boot
+  enable    Register projects to start automatically
             --running registers every project that is running right now
-  disable   Remove projects' boot registrations (does not stop the projects)
+  disable   Remove projects' autostart registrations (does not stop the projects)
             --all removes the registration of every project
   status    Show whether projects are registered and their last result
   list      Show every DDEV project with its autostart state
@@ -108,7 +108,7 @@ done
 
 if [ -n "$OPT_ALL" ] && [ "$ACTION" != "disable" ]; then
     if [ "$ACTION" = "enable" ]; then
-        echo "❌ Error: 'enable --all' is not supported: it would also start old or broken projects at every boot." >&2
+        echo "❌ Error: 'enable --all' is not supported: it would also start old or broken projects every time." >&2
         echo "   Use 'ddev autostart enable --running' to register the projects running now." >&2
     else
         echo "❌ Error: --all only works with 'disable'." >&2

@@ -218,6 +218,9 @@ unreleased_checks() {
   # At boot no one can type a sudo password, so DDEV mustn't ask for one.
   run grep -x 'Environment="DDEV_NONINTERACTIVE=true"' "${unit_file}"
   assert_success
+  # Two projects starting at once race to create DDEV's network; one at a time.
+  run grep '^ExecStart=' "${unit_file}"
+  assert_output --partial 'flock -o '
 
   # After `disable`, Tab offers the projects registered by this user (via the
   # plugin's plugin_list_registered), so this one now appears.
@@ -425,7 +428,8 @@ EOF
 p = plistlib.load(open(sys.argv[1], "rb"))
 assert p["Label"] == "ddev-autostart.demo" and p["WorkingDirectory"] == sys.argv[2]
 assert p["RunAtLoad"] and p["AbandonProcessGroup"] and p["ProgramArguments"][6] == "demo"
-assert p["EnvironmentVariables"]["DDEV_NONINTERACTIVE"] == "true"' "${agent}" "${TESTDIR}"
+assert p["EnvironmentVariables"]["DDEV_NONINTERACTIVE"] == "true"
+assert "flock" in p["ProgramArguments"][2] and "/.start.lock" in p["ProgramArguments"][2]' "${agent}" "${TESTDIR}"
     assert_success
   fi
   # "--" isn't allowed in an XML comment; the name must not end up in one.
@@ -437,6 +441,24 @@ assert p["EnvironmentVariables"]["DDEV_NONINTERACTIVE"] == "true"' "${agent}" "$
     assert_success
     rm -f "${fake}/home/Library/LaunchAgents/ddev-autostart.my--site.plist"
   fi
+  # The start lock: one at a time, and a process `ddev start` leaves running
+  # (like Mutagen's daemon) must not keep holding it.
+  if command -v perl >/dev/null 2>&1; then
+    local lockperl lockfile="${fake}/start.lock" t0
+    lockperl="$(bash -c 'source "$1/plugins/launchd.sh"; printf "%s" "$_LD_LOCK_PERL"' _ "${lib}")"
+    t0="$(date +%s)"
+    run perl -e "${lockperl}" "${lockfile}" sh -c 'sleep 5 >/dev/null 2>&1 & exit 3'
+    assert_equal "${status}" 3
+    run perl -e "${lockperl}" "${lockfile}" true
+    assert_success
+    [ "$(( $(date +%s) - t0 ))" -lt 4 ] || fail "a leftover child kept the start lock"
+    # Without a usable lock file it still starts, and says so.
+    run perl -e "${lockperl}" /nonexistent/dir/start.lock echo started
+    assert_success
+    assert_output --partial "without the start lock"
+    assert_output --partial "started"
+  fi
+
   # enable must not load the agent: loading runs `ddev start` right away.
   run grep -E '^(bootstrap|kickstart)' "${fake}/bin/calls"
   assert_failure

@@ -18,7 +18,18 @@
 #   - The job waits up to ~5 minutes for `docker info` to answer, then runs
 #     `ddev start`. Paths are passed to the fixed `sh -c` script as arguments,
 #     so they're never parsed by a shell.
-#   - The job writes its own log, creating the folder if needed. With
+#   - One `ddev start` at a time: projects starting at the same login race to
+#     create DDEV's shared network and fail ("network with name ddev_default
+#     already exists"). _LD_LOCK_PERL serializes them with flock on a file in
+#     the log folder. perl holds the lock and runs `ddev start` as a child that
+#     does NOT inherit it (perl's files are close-on-exec): otherwise processes
+#     ddev leaves running, like Mutagen's daemon, would keep the lock forever.
+#     The kernel releases it when perl exits, even if killed. After 10 minutes
+#     of waiting it starts anyway. Without perl, or if the lock file can't be
+#     opened, it starts unlocked.
+#   - The job writes its own log, creating the folder if needed. The checks use
+#     `true`, not `:`: a failed redirection on a special builtin like `:` makes
+#     a POSIX shell exit, which would skip the start. With
 #     StandardOutPath, launchd doesn't create a missing log folder.
 #   - AbandonProcessGroup: by default launchd kills whatever a job leaves
 #     running when it exits, which would include processes `ddev start`
@@ -33,6 +44,11 @@ _LD_LOG_DIR="${HOME}/Library/Logs/ddev-autostart"
 
 _LD_MARKER="<!-- Managed by ddev-autostart."
 _LD_WAIT_TRIES=150 # x 2 seconds
+
+# Runs ARGV under an exclusive lock on the file given first (see "Design").
+# No single quotes: it goes inside the job's sh -c script in single quotes.
+# shellcheck disable=SC2016 # perl code, not shell
+_LD_LOCK_PERL='$| = 1; use Fcntl ":flock"; my $l = shift; my $f; if (open($f, ">>", $l)) { my $ok = eval { local $SIG{ALRM} = sub { die "timeout\n" }; alarm 600; flock($f, LOCK_EX) or die "$l: $!\n"; alarm 0; 1 }; alarm 0; if (!$ok) { if ($@ eq "timeout\n") { print "Waited 10 minutes for another project to start; starting anyway.\n"; } else { chomp(my $e = $@); print "Warning: starting without the start lock ($e); projects starting together may fail.\n"; } } } else { print "Warning: starting without the start lock ($l: $!); projects starting together may fail.\n"; } system(@ARGV); if ($? == -1) { print STDERR "Could not run $ARGV[0]: $!\n"; exit 127; } exit($? & 127 ? 128 + ($? & 127) : $? >> 8);'
 
 _ld_label() { printf 'ddev-autostart.%s' "$1"; }
 _ld_agent_path() { printf '%s/%s.plist' "$DDEV_AUTOSTART_AGENT_DIR" "$(_ld_label "$1")"; }
@@ -207,7 +223,7 @@ _ld_render_plist() {
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>if mkdir -p "\${4%/*}" 2&gt;/dev/null &amp;&amp; : &gt;&gt;"\$4" 2&gt;/dev/null; then exec &gt;&gt;"\$4" 2&gt;&amp;1; fi; echo "== \$(date): ddev start \$3"; i=0; until "\$1" info &gt;/dev/null 2&gt;&amp;1; do i=\$((i+1)); if [ "\$i" -ge ${_LD_WAIT_TRIES} ]; then echo "Docker did not respond within 5 minutes." &gt;&amp;2; exit 1; fi; sleep 2; done; exec "\$2" start "\$3"</string>
+        <string>if mkdir -p "\${4%/*}" 2&gt;/dev/null &amp;&amp; true 2&gt;/dev/null &gt;&gt;"\$4"; then exec &gt;&gt;"\$4" 2&gt;&amp;1; fi; echo "== \$(date): ddev start \$3"; i=0; until "\$1" info &gt;/dev/null 2&gt;&amp;1; do i=\$((i+1)); if [ "\$i" -ge ${_LD_WAIT_TRIES} ]; then echo "Docker did not respond within 5 minutes." &gt;&amp;2; exit 1; fi; sleep 2; done; if command -v perl &gt;/dev/null 2&gt;&amp;1; then exec perl -e '$(_ld_xml "$_LD_LOCK_PERL")' "\${4%/*}/.start.lock" "\$2" start "\$3"; fi; echo "Warning: starting without the start lock (perl not found); projects starting together may fail."; exec "\$2" start "\$3"</string>
         <string>ddev-autostart</string>
         <string>$(_ld_xml "$docker_bin")</string>
         <string>$(_ld_xml "$ddev_bin")</string>

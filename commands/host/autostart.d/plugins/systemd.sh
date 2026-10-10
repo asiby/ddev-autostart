@@ -30,6 +30,21 @@
 #     `docker info` wait still applies.
 #   - Only files carrying _SD_MARKER are ever changed or removed, so a
 #     ddev-autostart-*.service someone else wrote is left alone.
+#   - One `ddev start` at a time: units start in parallel at boot, and two
+#     projects starting together race to create DDEV's shared network ("network
+#     with name ddev_default already exists"). flock(1) on a file in the user's
+#     ~/.cache serializes them. -o: flock holds the lock and ddev doesn't
+#     inherit it, or processes ddev leaves running (Mutagen's daemon) would
+#     keep it forever. The kernel releases it when flock exits, even if killed.
+#     After 10 minutes of waiting (-w 600; -E 254, a code ddev doesn't use)
+#     it starts anyway, hence TimeoutStartSec=1200. flock older than
+#     util-linux 2.26 (RHEL 7) rejects -E: a harmless probe (`flock ... true`)
+#     checks the options first, so the real run's exit code is always ddev's
+#     and is never mistaken for a flock error. Without support it starts
+#     unlocked rather than not at all. Without flock, or if the
+#     file can't be created, it starts unlocked. Only one user's projects are
+#     serialized: projects of different users sharing one Docker daemon can
+#     still race.
 #   - Units live in one machine-wide folder, but registrations belong to a Linux
 #     user (the unit's User= line). Commands only change the invoking user's
 #     units, so one user's `enable`, `disable --all` or uninstall can't
@@ -198,9 +213,10 @@ _sd_find_command() {
 # chosen context (default ~/.docker, found through HOME).
 _sd_render_unit() {
     local name="$1" root="$2" user="$3" group="$4" home="$5" ddev_bin="$6" docker_bin="$7"
-    local runtime_dir="${8:-}" docker_deps="" extra_env="" exec_ddev exec_docker var
+    local runtime_dir="${8:-}" docker_deps="" extra_env="" exec_ddev exec_docker exec_lock var
     exec_ddev="$(_sd_exec_escape "$ddev_bin")"
     exec_docker="$(_sd_exec_escape "$docker_bin")"
+    exec_lock="$(_sd_exec_escape "$home")/.cache/ddev-autostart/start.lock"
     if systemctl list-unit-files docker.service >/dev/null 2>&1 &&
         systemctl list-unit-files docker.service 2>/dev/null | grep -q '^docker\.service'; then
         docker_deps=$'Wants=docker.service\nAfter=docker.service'
@@ -240,9 +256,10 @@ ${extra_env}
 # Wait up to ~2 minutes for the Docker daemon to answer before starting.
 # (\$\$ is systemd's escape for a literal \$ inside Exec lines.)
 ExecStartPre=/bin/sh -c 'i=0; until "${exec_docker}" info >/dev/null 2>&1; do i=\$\$((i+1)); [ \$\$i -ge 60 ] && exit 1; sleep 2; done'
-ExecStart="${exec_ddev}" start ${name}
+# One ddev start at a time (see "Design"); the lock is released when it exits.
+ExecStart=/bin/sh -c 'mkdir -p "\$\${3%%/*}" 2>/dev/null; if command -v flock >/dev/null 2>&1 && true 2>/dev/null >>"\$\$3"; then flock -o -w 0 -E 254 "\$\$3" true 2>/dev/null; p=\$\$?; if [ "\$\$p" -eq 0 ] || [ "\$\$p" -eq 254 ]; then flock -o -w 600 -E 254 "\$\$3" "\$\$1" start "\$\$2"; rc=\$\$?; [ "\$\$rc" -ne 254 ] && exit "\$\$rc"; echo "Waited 10 minutes for another project to start; starting anyway."; else echo "Warning: starting without the start lock (this flock does not support -o, -w and -E); projects starting together may fail."; fi; else echo "Warning: starting without the start lock (no flock, or \$\${3%%/*} not writable); projects starting together may fail."; fi; exec "\$\$1" start "\$\$2"' ddev-autostart "${exec_ddev}" ${name} "${exec_lock}"
 ExecStop="${exec_ddev}" stop ${name}
-TimeoutStartSec=600
+TimeoutStartSec=1200
 TimeoutStopSec=180
 
 [Install]
@@ -281,8 +298,9 @@ plugin_enable() {
         echo "❌ Error: ddev not found in PATH." >&2
         return 1
     fi
-    if ! _sd_quotable "$ddev_bin"; then
-        echo "❌ Error: ddev's path contains a quote, backslash or newline: ${ddev_bin}" >&2
+    # It's ExecStop's executable too, where systemd also refuses $, ' and `.
+    if ! _sd_shell_safe "$ddev_bin"; then
+        echo "❌ Error: ddev's path contains a character a systemd unit can't hold safely: ${ddev_bin}" >&2
         return 1
     fi
     # The boot service runs `docker info` to wait for Docker. Without the docker

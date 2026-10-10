@@ -102,6 +102,7 @@ site-a   enabled    active    running  /home/me/code/site-a
 - runs `ddev start <project>` as your user, never as root;
 - starts after Docker and waits up to about 2 minutes for it to respond;
 - runs at boot without anyone needing to log in.
+- with several projects registered, starts them one at a time, since DDEV fails when two start at the same moment.
 
 It runs only once, at boot. If Docker is stopped or restarted later, your projects stop with it and stay stopped until you run `ddev start`.
 
@@ -122,6 +123,7 @@ On macOS, Docker runs as your user and only starts once you log in, so projects 
 - waits up to about 5 minutes for Docker to respond;
 - runs `ddev start <project>`;
 - writes what happened to `~/Library/Logs/ddev-autostart/<project>.log`.
+- with several projects registered, starts them one at a time, since DDEV fails when two start at the same moment.
 
 macOS lists it in System Settings → General → Login Items & Extensions → Allow in the Background as `sh`. Leave it switched on.
 

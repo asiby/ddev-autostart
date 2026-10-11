@@ -91,9 +91,9 @@ site-a   enabled    active    running  /home/me/code/site-a
 | Platform | Status |
 | -------- | ------ |
 | Linux with systemd (Ubuntu, Debian, Fedora, Arch, …) | ✅ Supported |
-| Linux with OpenRC (Alpine, Gentoo) | Planned |
+| Linux with OpenRC (Alpine, Gentoo) | Help wanted (see [Contributing](#contributing)) |
 | macOS (launchd) | ✅ Supported (starts at login) |
-| Windows (Task Scheduler) | Planned |
+| Windows | Help wanted (see [Contributing](#contributing)) |
 
 ## How it works (Linux / systemd)
 
@@ -160,21 +160,8 @@ Before deleting the command, uninstalling removes the autostart registration of 
 
 ## Contributing
 
-Each operating system is a plugin in `commands/host/autostart.d/plugins/`. A plugin defines four functions: `plugin_enable`, `plugin_disable`, `plugin_status` and `plugin_list_registered`. See `systemd.sh` for the reference implementation. Shell completion uses `plugin_list_registered` too, so a new plugin gets completion without extra work. Since it runs on every Tab press, it must list only the current user's registrations, never prompt or need `sudo`, and print nothing but its results.
-
-Every file under `commands/host/` must contain `#ddev-generated` so DDEV can update and remove it.
-
-Environment variables useful for development and testing:
-
-| Variable | Effect |
-| -------- | ------ |
-| `DDEV_AUTOSTART_PLUGIN` | Force a plugin (e.g. `systemd`) instead of detecting the OS |
-| `DDEV_AUTOSTART_UNIT_DIR` | Write systemd units to another folder instead of `/etc/systemd/system` |
-| `DDEV_AUTOSTART_AGENT_DIR` | Write LaunchAgents to another folder instead of `~/Library/LaunchAgents` |
-| `DDEV_AUTOSTART_NONINTERACTIVE` | Never prompt for a `sudo` password; fail with manual steps instead |
-
-The tests use [Bats](https://bats-core.readthedocs.io/): `bats ./tests/test.bats`. Where systemd is running and `sudo` needs no password, they register a real boot service for a temporary test project and remove it afterwards; elsewhere those checks are skipped.
+Each operating system is a plugin in `commands/host/autostart.d/plugins/`, so support for a new system is mostly one file. I don't have an OpenRC or Windows system to test on, so plugins for those are especially welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the plugin contract, what every plugin must handle, and how to test.
 
 ## Credits
 
-**Contributed and maintained by [@asiby](https://github.com/asiby)**
+**Contributed and maintained by [@asiby](https://github.com/asiby)**, with help from Claude (Anthropic) and reviews by ChatGPT and Perplexity.

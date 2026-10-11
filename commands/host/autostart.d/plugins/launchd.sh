@@ -15,22 +15,17 @@
 #     agent at login, like a oneshot systemd unit.
 #   - `enable` only writes the file; it doesn't load it, since loading runs
 #     the job right away. launchd loads it at the next login.
-#   - The job waits up to ~5 minutes for `docker info` to answer, then runs
-#     `ddev start`. Paths are passed to the fixed `sh -c` script as arguments,
-#     so they're never parsed by a shell.
-#   - One `ddev start` at a time: projects starting at the same login race to
-#     create DDEV's shared network and fail ("network with name ddev_default
-#     already exists"). _LD_LOCK_PERL serializes them with flock on a file in
-#     the log folder. perl holds the lock and runs `ddev start` as a child that
-#     does NOT inherit it (perl's files are close-on-exec): otherwise processes
-#     ddev leaves running, like Mutagen's daemon, would keep the lock forever.
-#     The kernel releases it when perl exits, even if killed. After 10 minutes
-#     of waiting it starts anyway. Without perl, or if the lock file can't be
-#     opened, it starts unlocked.
-#   - The job writes its own log, creating the folder if needed. The checks use
-#     `true`, not `:`: a failed redirection on a special builtin like `:` makes
-#     a POSIX shell exit, which would skip the start. With
-#     StandardOutPath, launchd doesn't create a missing log folder.
+#   - The job runs bin/ddev-autostart, shipped with the add-on, with the
+#     paths as arguments (never parsed by a shell). That script waits for
+#     Docker, takes the start lock (one `ddev start` at a time, see its
+#     comments), runs `ddev start` and writes the log. Add-on updates reach
+#     every registration this way.
+#   - macOS lists a login job in Login Items under the name of the file it
+#     runs (a `/bin/sh -c` job showed up as "sh"). So the job starts through
+#     a tiny per-project launcher, ddev-autostart-<project> in
+#     ~/Library/Application Support/ddev-autostart, which only runs the
+#     script it's given (`exec "$@"`). The list then says which project each
+#     entry is, which matters for one left behind by a deleted project.
 #   - AbandonProcessGroup: by default launchd kills whatever a job leaves
 #     running when it exits, which would include processes `ddev start`
 #     launches to keep running (Mutagen's daemon, for one).
@@ -43,14 +38,62 @@ DDEV_AUTOSTART_AGENT_DIR="${DDEV_AUTOSTART_AGENT_DIR:-${HOME}/Library/LaunchAgen
 _LD_LOG_DIR="${HOME}/Library/Logs/ddev-autostart"
 
 _LD_MARKER="<!-- Managed by ddev-autostart."
-_LD_WAIT_TRIES=150 # x 2 seconds
+# Per-project launchers (see "Design"). They hold no logic, so they never
+# need updating.
+_LD_LAUNCHER_DIR="${HOME}/Library/Application Support/ddev-autostart"
+_LD_LAUNCHER_MARKER="# Managed by ddev-autostart."
+_LD_LAUNCHER="#!/bin/sh
+${_LD_LAUNCHER_MARKER} Named after the project, so macOS Login Items shows
+# which project this login job is for. Runs the add-on's login script.
+exec \"\$@\""
 
-# Runs ARGV under an exclusive lock on the file given first (see "Design").
-# No single quotes: it goes inside the job's sh -c script in single quotes.
-# shellcheck disable=SC2016 # perl code, not shell
-_LD_LOCK_PERL='$| = 1; use Fcntl ":flock"; my $l = shift; my $f; if (open($f, ">>", $l)) { my $ok = eval { local $SIG{ALRM} = sub { die "timeout\n" }; alarm 600; flock($f, LOCK_EX) or die "$l: $!\n"; alarm 0; 1 }; alarm 0; if (!$ok) { if ($@ eq "timeout\n") { print "Waited 10 minutes for another project to start; starting anyway.\n"; } else { chomp(my $e = $@); print "Warning: starting without the start lock ($e); projects starting together may fail.\n"; } } } else { print "Warning: starting without the start lock ($l: $!); projects starting together may fail.\n"; } system(@ARGV); if ($? == -1) { print STDERR "Could not run $ARGV[0]: $!\n"; exit 127; } exit($? & 127 ? 128 + ($? & 127) : $? >> 8);'
+# The login job, next to this plugin: autostart.d/bin/ddev-autostart.
+_LD_JOB_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/bin/ddev-autostart"
 
 _ld_label() { printf 'ddev-autostart.%s' "$1"; }
+_ld_launcher_path() { printf '%s/ddev-autostart-%s' "$_LD_LAUNCHER_DIR" "$1"; }
+
+# True if the launcher file was written by this add-on (marker on line 2).
+_ld_launcher_is_managed() {
+    local line2=""
+    [ -f "$1" ] || return 1
+    { IFS= read -r _ && IFS= read -r line2; } <"$1" || true
+    case "$line2" in
+        "$_LD_LAUNCHER_MARKER"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Removes NAME's launcher (and the folder, once empty) if its LaunchAgent is
+# gone: it's only used through the plist.
+_ld_drop_launcher() {
+    local launcher
+    launcher="$(_ld_launcher_path "$1")"
+    [ ! -e "$(_ld_agent_path "$1")" ] || return 0
+    if _ld_launcher_is_managed "$launcher"; then
+        rm -f "$launcher"
+    fi
+    rmdir "$_LD_LAUNCHER_DIR" 2>/dev/null || true # only if it's now empty
+}
+
+# Writes NAME's launcher unless it's already there and current.
+_ld_write_launcher() {
+    local launcher tmp
+    launcher="$(_ld_launcher_path "$1")"
+    if [ -e "$launcher" ] && ! _ld_launcher_is_managed "$launcher"; then
+        echo "❌ Error: ${launcher} exists but wasn't created by ddev autostart; leaving it alone." >&2
+        return 1
+    fi
+    if [ -x "$launcher" ] && [ "$(cat "$launcher")" = "$_LD_LAUNCHER" ]; then
+        return 0
+    fi
+    if ! mkdir -p "$_LD_LAUNCHER_DIR" || ! tmp="$(mktemp "${launcher}.XXXXXX")" ||
+        ! printf '%s\n' "$_LD_LAUNCHER" >"$tmp" || ! chmod 0755 "$tmp" || ! mv -f "$tmp" "$launcher"; then
+        [ -z "${tmp:-}" ] || rm -f "$tmp"
+        echo "❌ Error: can't write ${launcher}." >&2
+        return 1
+    fi
+}
 _ld_agent_path() { printf '%s/%s.plist' "$DDEV_AUTOSTART_AGENT_DIR" "$(_ld_label "$1")"; }
 _ld_log_path() { printf '%s/%s.log' "$_LD_LOG_DIR" "$1"; }
 _ld_domain() { printf 'gui/%s' "$(id -u)"; }
@@ -195,9 +238,10 @@ _ld_unsure() {
 }
 
 # Arguments: NAME ROOT DDEV_BIN DOCKER_BIN LOG
-# The script gets: $1 docker, $2 ddev, $3 project name, $4 log file.
+# The job is LAUNCHER $_LD_JOB_SCRIPT DOCKER DDEV NAME LOG AGENT.
 # DOCKER_HOST, DOCKER_CONTEXT, DOCKER_CONFIG and DDEV_XDG_CONFIG_HOME (where
-# DDEV keeps its global config) are copied when set, as on systemd. HOME is set explicitly rather than relying on launchd's default.
+# DDEV keeps its global config) are copied when set, as on systemd.
+# HOME is set explicitly rather than relying on launchd's default.
 # DDEV_NONINTERACTIVE: at login the network may not be up, so the project's
 # hostname may not resolve yet; DDEV would then ask for a sudo password to edit
 # /etc/hosts, which a login job can't answer, and fail (seen on macOS 26).
@@ -221,14 +265,13 @@ _ld_render_plist() {
     <string>$(_ld_label "$name")</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/sh</string>
-        <string>-c</string>
-        <string>if mkdir -p "\${4%/*}" 2&gt;/dev/null &amp;&amp; true 2&gt;/dev/null &gt;&gt;"\$4"; then exec &gt;&gt;"\$4" 2&gt;&amp;1; fi; echo "== \$(date): ddev start \$3"; i=0; until "\$1" info &gt;/dev/null 2&gt;&amp;1; do i=\$((i+1)); if [ "\$i" -ge ${_LD_WAIT_TRIES} ]; then echo "Docker did not respond within 5 minutes." &gt;&amp;2; exit 1; fi; sleep 2; done; if command -v perl &gt;/dev/null 2&gt;&amp;1; then exec perl -e '$(_ld_xml "$_LD_LOCK_PERL")' "\${4%/*}/.start.lock" "\$2" start "\$3"; fi; echo "Warning: starting without the start lock (perl not found); projects starting together may fail."; exec "\$2" start "\$3"</string>
-        <string>ddev-autostart</string>
+        <string>$(_ld_xml "$(_ld_launcher_path "$name")")</string>
+        <string>$(_ld_xml "$_LD_JOB_SCRIPT")</string>
         <string>$(_ld_xml "$docker_bin")</string>
         <string>$(_ld_xml "$ddev_bin")</string>
         <string>${name}</string>
         <string>$(_ld_xml "$log")</string>
+        <string>$(_ld_xml "$(_ld_agent_path "$name")")</string>
     </array>
     <key>WorkingDirectory</key>
     <string>$(_ld_xml "$root")</string>
@@ -271,6 +314,21 @@ _ld_try_hint() {
 }
 
 plugin_enable() {
+    local launcher had=""
+    launcher="$(_ld_launcher_path "$1")"
+    [ ! -e "$launcher" ] || had=1
+    _ld_enable "$@" && return 0
+    # Don't leave behind a launcher this call created that no plist runs (the
+    # plist may still be missing, or one from v0.5.1 that runs /bin/sh).
+    if [ -z "$had" ] &&
+        ! grep -qF "<string>$(_ld_xml "$launcher")</string>" "$(_ld_agent_path "$1")" 2>/dev/null; then
+        _ld_launcher_is_managed "$launcher" && rm -f "$launcher"
+        rmdir "$_LD_LAUNCHER_DIR" 2>/dev/null || true
+    fi
+    return 1
+}
+
+_ld_enable() {
     local name="$1" root="$2"
     local agent ddev_bin docker_bin log tmp var state disabled_jobs was on stale=""
 
@@ -299,12 +357,23 @@ plugin_enable() {
         return 1
     fi
 
+    if [ ! -x "$_LD_JOB_SCRIPT" ] || ! _ld_one_line "$_LD_JOB_SCRIPT"; then
+        echo "❌ Error: the add-on's login script is missing (${_LD_JOB_SCRIPT}). Reinstall it with: ddev add-on get asiby/ddev-autostart" >&2
+        return 1
+    fi
+
     agent="$(_ld_agent_path "$name")"
     log="$(_ld_log_path "$name")"
     if [ -e "$agent" ] && ! _ld_is_managed "$agent"; then
         _ld_not_ours "$agent"
         return 1
     fi
+    _ld_one_line "$_LD_LAUNCHER_DIR" || {
+        echo "❌ Error: your home folder's path contains a line break." >&2
+        return 1
+    }
+    # Before the plist, which runs it. Also restores a launcher deleted by hand.
+    _ld_write_launcher "$name" || return 1
 
     if ! _ld_timeout 20 "$docker_bin" info >/dev/null 2>&1; then
         echo "⚠️  Warning: Docker isn't responding right now. The job will still wait for it at login."
@@ -399,6 +468,7 @@ plugin_disable() {
     log="$(_ld_log_path "$name")"
 
     if [ ! -f "$agent" ]; then
+        _ld_drop_launcher "$name" # left behind if the plist was deleted by hand
         echo "ℹ️  ${name} is not registered for autostart; nothing to do."
         return 0
     fi
@@ -425,7 +495,9 @@ plugin_disable() {
         return 1
     fi
     # A running job still writes to its log; deleting it now would lose that.
+    # (It has already moved on from its launcher, which only exec's.)
     [ "$state" = "running" ] || rm -f "$log"
+    _ld_drop_launcher "$name"
 
     echo "✅ ${name} will no longer start at login. (The project itself was left running.)"
 }
@@ -499,4 +571,29 @@ plugin_list_registered() {
         esac
         printf '%s\t%s\t%s\n' "$name" "$enabled" "$service"
     done
+}
+
+# Optional: the Docker and DDEV settings (VAR=value lines) a registration was
+# written with, so `enable --registered` can keep them instead of taking the
+# current shell's. Reads the layout _ld_render_plist writes: each <key> line
+# followed by its <string> line.
+plugin_registered_env() {
+    local agent
+    agent="$(_ld_agent_path "$1")"
+    _ld_is_managed "$agent" || return 0
+    awk '
+        want != "" {
+            if (match($0, /<string>.*<\/string>/)) {
+                v = substr($0, RSTART + 8, RLENGTH - 17)
+                gsub(/&lt;/, "<", v); gsub(/&gt;/, ">", v); gsub(/&amp;/, "\\&", v)
+                print want "=" v
+            }
+            want = ""
+            next
+        }
+        /<key>(DOCKER_HOST|DOCKER_CONTEXT|DOCKER_CONFIG|DDEV_XDG_CONFIG_HOME)<\/key>/ {
+            want = $0
+            sub(/^[ \t]*<key>/, "", want); sub(/<\/key>.*/, "", want)
+        }
+    ' "$agent"
 }

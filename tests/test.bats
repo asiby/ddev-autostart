@@ -215,6 +215,11 @@ unreleased_checks() {
   assert_success
   run grep '^ExecStartPre=' "${unit_file}"
   assert_output --partial "\"${DOCKERBIN}/docker\" info"
+  assert_output --partial "is not there any more (moved or uninstalled). Run: ddev autostart enable ${PROJNAME}"
+  # --registered rewrites every registration of this user.
+  run env PATH="${DOCKERBIN}:${PATH}" ddev autostart enable --registered
+  assert_success
+  assert_output --regexp "Updating the registrations of:.* ${PROJNAME}([[:space:]]|\$)"
   # At boot no one can type a sudo password, so DDEV mustn't ask for one.
   run grep -x 'Environment="DDEV_NONINTERACTIVE=true"' "${unit_file}"
   assert_success
@@ -424,12 +429,17 @@ EOF
   run sed -n 2p "${agent}"
   assert_output --partial "<!-- Managed by ddev-autostart."
   if command -v python3 >/dev/null 2>&1; then
-    run python3 -c 'import plistlib, sys
+    run python3 -c 'import os, plistlib, sys
 p = plistlib.load(open(sys.argv[1], "rb"))
 assert p["Label"] == "ddev-autostart.demo" and p["WorkingDirectory"] == sys.argv[2]
-assert p["RunAtLoad"] and p["AbandonProcessGroup"] and p["ProgramArguments"][6] == "demo"
+a = p["ProgramArguments"]
+assert p["RunAtLoad"] and p["AbandonProcessGroup"] and a[4] == "demo" and a[6] == sys.argv[3]
 assert p["EnvironmentVariables"]["DDEV_NONINTERACTIVE"] == "true"
-assert "flock" in p["ProgramArguments"][2] and "/.start.lock" in p["ProgramArguments"][2]' "${agent}" "${TESTDIR}"
+# A per-project launcher, so Login Items shows the project, runs the script
+# shipped with the add-on.
+assert a[0] == sys.argv[5] and os.access(a[0], os.X_OK)
+assert a[1] == sys.argv[4] and os.access(a[1], os.X_OK)' "${agent}" "${TESTDIR}" "${agent}" "${lib}/bin/ddev-autostart" \
+      "${fake}/home/Library/Application Support/ddev-autostart/ddev-autostart-demo"
     assert_success
   fi
   # "--" isn't allowed in an XML comment; the name must not end up in one.
@@ -441,23 +451,47 @@ assert "flock" in p["ProgramArguments"][2] and "/.start.lock" in p["ProgramArgum
     assert_success
     rm -f "${fake}/home/Library/LaunchAgents/ddev-autostart.my--site.plist"
   fi
-  # The start lock: one at a time, and a process `ddev start` leaves running
-  # (like Mutagen's daemon) must not keep holding it.
+  # The login job (bin/ddev-autostart), with a fake docker and ddev.
+  local job="${lib}/bin/ddev-autostart" jlog="${fake}/logs/demo.log" t0
+  printf '#!/bin/sh\nexit 0\n' >"${fake}/bin/docker"
+  printf '#!/bin/sh\necho "ran $*"\n[ -z "${SPAWN:-}" ] || (sleep 5 >/dev/null 2>&1 &)\nexit ${CODE:-0}\n' >"${fake}/bin/ddev"
+  chmod +x "${fake}/bin/docker" "${fake}/bin/ddev"
+  run env CODE=3 "${job}" "${fake}/bin/docker" "${fake}/bin/ddev" demo "${jlog}" "${agent}"
+  assert_equal "${status}" 3
+  run cat "${jlog}"
+  assert_output --partial "ran start demo"
+  # One start at a time, and a process `ddev start` leaves running (like
+  # Mutagen's daemon) must not keep holding the lock.
   if command -v perl >/dev/null 2>&1; then
-    local lockperl lockfile="${fake}/start.lock" t0
-    lockperl="$(bash -c 'source "$1/plugins/launchd.sh"; printf "%s" "$_LD_LOCK_PERL"' _ "${lib}")"
     t0="$(date +%s)"
-    run perl -e "${lockperl}" "${lockfile}" sh -c 'sleep 5 >/dev/null 2>&1 & exit 3'
-    assert_equal "${status}" 3
-    run perl -e "${lockperl}" "${lockfile}" true
+    run env SPAWN=1 "${job}" "${fake}/bin/docker" "${fake}/bin/ddev" demo "${jlog}" "${agent}"
+    assert_success
+    run "${job}" "${fake}/bin/docker" "${fake}/bin/ddev" demo "${jlog}" "${agent}"
     assert_success
     [ "$(( $(date +%s) - t0 ))" -lt 4 ] || fail "a leftover child kept the start lock"
-    # Without a usable lock file it still starts, and says so.
-    run perl -e "${lockperl}" /nonexistent/dir/start.lock echo started
-    assert_success
-    assert_output --partial "without the start lock"
-    assert_output --partial "started"
   fi
+  # Without a usable lock file (or log) it still starts, and says so. /proc
+  # can't hold a new folder, even for root.
+  run "${job}" "${fake}/bin/docker" "${fake}/bin/ddev" demo /proc/nope/demo.log "${agent}"
+  assert_success
+  assert_output --partial "without the start lock"
+  assert_output --partial "ran start demo"
+  # docker moved or uninstalled since enable: say what to do instead of failing silently.
+  : >"${jlog}"
+  run "${job}" "${fake}/gone/docker" "${fake}/bin/ddev" demo "${jlog}" "${agent}"
+  assert_failure
+  run cat "${jlog}"
+  assert_output --partial "${fake}/gone/docker is not there any more (moved or uninstalled). Run: ddev autostart enable demo"
+  refute_output --partial "ran start"
+  # Disabled while it ran: nothing will read the log again, so it goes.
+  run "${job}" "${fake}/bin/docker" "${fake}/bin/ddev" demo "${jlog}" "${fake}/no-agent"
+  assert_success
+  assert_file_not_exists "${jlog}"
+  # Also when it stops early.
+  : >"${jlog}"
+  run "${job}" "${fake}/gone/docker" "${fake}/bin/ddev" demo "${jlog}" "${fake}/no-agent"
+  assert_failure
+  assert_file_not_exists "${jlog}"
 
   # enable must not load the agent: loading runs `ddev start` right away.
   run grep -E '^(bootstrap|kickstart)' "${fake}/bin/calls"
@@ -520,12 +554,19 @@ assert "flock" in p["ProgramArguments"][2] and "/.start.lock" in p["ProgramArgum
     run python3 -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["EnvironmentVariables"]["DDEV_XDG_CONFIG_HOME"])' \
       "${fake}/home/Library/LaunchAgents/ddev-autostart.xdg.plist"
     assert_output "/tmp/elsewhere"
+    # enable --registered reads these back to keep them (XML escapes undone).
+    run env DOCKER_HOST='unix:///tmp/a&b<c>.sock' HOME="${fake}/home" PATH="${fake}/bin:${PATH}" \
+      bash -c "${call}" _ "${lib}" plugin_enable xdg "${TESTDIR}"
+    assert_success
+    run launchd plugin_registered_env xdg
+    assert_output 'DOCKER_HOST=unix:///tmp/a&b<c>.sock'
     rm -f "${fake}/home/Library/LaunchAgents/ddev-autostart.xdg.plist"
   fi
 
   run launchd plugin_disable demo
   assert_success
   assert_file_not_exists "${agent}"
+  assert_file_not_exists "${fake}/home/Library/Application Support/ddev-autostart/ddev-autostart-demo"
   run launchd plugin_list_registered
   assert_output ""
   rm -rf "${fake}"

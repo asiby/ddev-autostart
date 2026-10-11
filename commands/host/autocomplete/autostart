@@ -77,9 +77,10 @@ fi
 action="${words[0]}"
 case "$action" in
     enable)
-        # --running replaces project names, so offer it only before any name.
-        case "$typed" in *" --running "*) exit 0 ;; esac
-        [ "$typed" = " " ] && emit --running
+        # --running and --registered replace project names, so offer them only
+        # before any name.
+        case "$typed" in *" --running "* | *" --registered "*) exit 0 ;; esac
+        [ "$typed" = " " ] && emit --running --registered
         case "$cur" in -*) exit 0 ;; esac
         # shellcheck disable=SC2046 # project names never contain spaces
         emit_new $(all_projects)

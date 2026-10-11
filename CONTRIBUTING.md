@@ -14,12 +14,13 @@ commands/host/
     lib/list.sh               the `list` table
     plugins/systemd.sh        Linux with systemd
     plugins/launchd.sh        macOS
+    bin/ddev-autostart        the macOS login job that launchd runs
 tests/
   test.bats                   Bats tests, run in CI
   testdata/launchd/           real `launchctl` output used by the tests
 ```
 
-Everything system-specific lives in one plugin file. The command, `list`, `disable --all`, uninstalling and Tab completion all work through the plugin, so a new plugin gets them without changes elsewhere. (The command's one-line description in `commands/host/autostart`, which mentions Linux and macOS, needs a word added.)
+Everything system-specific lives in one plugin file (plus, for macOS, the script its login jobs run). The command, `list`, `disable --all`, uninstalling and Tab completion all work through the plugin, so a new plugin gets them without changes elsewhere. (The command's one-line description in `commands/host/autostart`, which mentions Linux and macOS, needs a word added.)
 
 ## The plugin contract
 
@@ -32,9 +33,11 @@ A plugin is `commands/host/autostart.d/plugins/<name>.sh`, sourced by bash. It d
 | `plugin_status NAME APPROOT` | Prints a human-readable status. |
 | `plugin_list_registered` | Prints one line per registered project: `NAME<TAB>AUTOSTART<TAB>SERVICE`. |
 
-`APPROOT` is empty for `disable` and `status` when the project was deleted or moved; they must still work.
+`APPROOT` is empty for `disable` and `status` when the project was deleted or moved; they must still work. `plugin_enable` must be safe to run again on a registered project: `enable --registered` runs it on each one to rewrite it after an update.
 
-In `plugin_list_registered`, AUTOSTART is usually `enabled`, `disabled` or `unknown`, and SERVICE `active`, `inactive`, `failed` or `activating`; other words from the system's own tool can be passed through as they are (the systemd plugin prints what `systemctl` says). `list` treats `failed` specially and adds `orphaned` itself. It must list only the current user's registrations. Tab completion calls it on every key press, so it has to be quick, never prompt or need `sudo`, change nothing, and print nothing else on stdout.
+In `plugin_list_registered`, AUTOSTART is usually `enabled`, `disabled` or `unknown`, and SERVICE `active`, `inactive`, `failed` or `activating`; other words from the system's own tool can be passed through as they are (the systemd plugin prints what `systemctl` says). `list` treats `failed` specially and adds `orphaned` itself, and `enable --registered` rewrites only projects whose AUTOSTART is `enabled`. It must list only the current user's registrations. Tab completion calls it on every key press, so it has to be quick, never prompt or need `sudo`, change nothing, and print nothing else on stdout.
+
+A plugin can also define `plugin_registered_env NAME`, which prints the `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG` and `DDEV_XDG_CONFIG_HOME` values a registration holds, one `VAR=value` line each. `enable --registered` uses them so a rewritten registration keeps its settings; without it, the current shell's are used.
 
 Each function returns 0 on success and non-zero on failure, with errors on stderr starting with `❌ Error:`.
 
@@ -50,7 +53,7 @@ These come from bugs found while building the first two plugins. Most only showe
 
 - Only change or remove files this add-on created. Mark each file you write (both plugins put a marker comment near the top) and check for the marker before touching a file.
 - Run DDEV as the user who registered the project, never as root.
-- Record the full paths of `ddev` and `docker` when `enable` runs. Boot and login jobs don't get the user's terminal PATH.
+- Record the full paths of `ddev` and `docker` when `enable` runs. Boot and login jobs don't get the user's terminal PATH. If either is gone at boot, say so in the log and suggest running `ddev autostart enable` again.
 - Wait for `docker info` to answer before running `ddev start`, with a limit (about 2 minutes on Linux, 5 on macOS).
 - Give the job enough time. Any time limit the system puts on it must cover the Docker wait, up to 10 minutes waiting for the lock (below), and the start itself; systemd's is 1200 seconds for this reason.
 - Set `DDEV_NONINTERACTIVE=true` for `ddev start`. Otherwise DDEV may ask for a `sudo` password to edit the hosts file, which a boot job can't answer, and fail.

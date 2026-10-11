@@ -42,6 +42,7 @@ To update to the latest version, run the same command again from the project you
 | ------- | ----------- |
 | `ddev autostart enable [project...]` | Start projects automatically |
 | `ddev autostart enable --running` | Start every project that is running right now automatically |
+| `ddev autostart enable --registered` | Update every registration, after updating the add-on or moving `docker` or `ddev` |
 | `ddev autostart disable [project...]` | Stop starting projects automatically (they keep running) |
 | `ddev autostart disable --all` | Stop starting every project automatically |
 | `ddev autostart status [project...]` | Show whether projects are registered and whether they started |
@@ -70,6 +71,8 @@ ddev autostart enable --running
 ```
 
 `--running` asks DDEV which projects are running, so Docker must be up.
+
+After updating the add-on, run `ddev autostart enable --registered` so existing registrations get the changes. Each one keeps the Docker settings it was registered with (`DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DDEV_XDG_CONFIG_HOME`); to change those, run `ddev autostart enable <project>` from a shell that has the new ones. It only rewrites registrations that `systemctl` or `launchctl` report as turned on, and skips those reported as off or that it can't read at that moment, as well as projects it can't find. On macOS, switching an entry off in System Settings doesn't show in `launchctl`, so `--registered` still rewrites it.
 
 `ddev autostart list` gives an overview of all your projects:
 
@@ -114,7 +117,7 @@ Registrations belong to the Linux user who made them. On a shared machine, other
 sudo systemctl start ddev-autostart-<project>.service
 ```
 
-The service records where `ddev` and `docker` are installed, and adds only those folders to the standard system ones. If you move or reinstall either to a different location, run `ddev autostart enable <project>` again to update it. Normal upgrades (apt, Homebrew, `ddev self-upgrade`) keep the same location and need nothing.
+The service records where `ddev` and `docker` are installed, and adds only those folders to the standard system ones. If you move or reinstall either to a different location, the service fails and its log says so; run `ddev autostart enable --registered` to update every registration. Normal upgrades (apt, Homebrew, `ddev self-upgrade`) keep the same location and need nothing. The same goes for macOS, for example after switching between Docker Desktop and OrbStack.
 
 ## How it works (macOS / launchd)
 
@@ -125,7 +128,9 @@ On macOS, Docker runs as your user and only starts once you log in, so projects 
 - writes what happened to `~/Library/Logs/ddev-autostart/<project>.log`.
 - with several projects registered, starts them one at a time, since DDEV fails when two start at the same moment.
 
-macOS lists it in System Settings → General → Login Items & Extensions → Allow in the Background as `sh`. Leave it switched on.
+macOS lists each registered project in System Settings → General → Login Items & Extensions, under App Background Activity (called Allow in the Background before macOS 26), as `ddev-autostart-<project>`, marked "Item from unidentified developer". Leave it switched on. Projects registered before v0.5.2 show up as `sh` until you run `ddev autostart enable --registered`; they keep working either way.
+
+The entry runs a small launcher, `~/Library/Application Support/ddev-autostart/ddev-autostart-<project>`, which `disable` removes along with the LaunchAgent.
 
 As on Linux, it runs only once, and `enable` and `disable` don't start or stop the project. To try it without logging out, run the command `ddev autostart status <project>` shows next to "Try it".
 
@@ -140,13 +145,15 @@ cat ~/Library/Logs/ddev-autostart/<project>.log        # macOS
 
 Common causes: Docker took more than about 2 minutes (Linux) or 5 minutes (macOS) to start, your user isn't in the `docker` group, lingering is off with rootless Docker or Podman, Docker isn't set to start at login (macOS), or the project itself fails to start (try `ddev start <project>` by hand).
 
-**macOS: the project didn't start at login, and its log has no entry for that login.** macOS lists login jobs in System Settings, under General → Login Items & Extensions → Allow in the Background. This one shows up there as `sh`, because it runs a short shell script. If it was switched off, switch it back on. If it was removed, register the project again with `ddev autostart disable <project>` then `ddev autostart enable <project>`. If `status` says the last result failed but the log is empty, launchd couldn't open the project folder: it was moved, deleted, or is in a protected folder (see below).
+**macOS: the project didn't start at login, and its log has no entry for that login.** macOS lists login jobs in System Settings, under General → Login Items & Extensions → App Background Activity (Allow in the Background before macOS 26). This one shows up there as `ddev-autostart-<project>` (as `sh` if it was registered before v0.5.2). If it was switched off, switch it back on. `ddev autostart list` can't see that switch, so it still shows the project as `enabled`. If it was removed, register the project again with `ddev autostart disable <project>` then `ddev autostart enable <project>`. If `status` says the last result failed but the log is empty, launchd couldn't run the job: the project folder was moved, deleted, or is in a protected folder (see below), or the add-on's files were deleted without uninstalling it (reinstall it, then run `ddev autostart enable --registered`).
+
+**The log says `docker` or `ddev` "is not there any more".** It was moved or uninstalled since the project was registered, for example by switching between Docker Desktop and OrbStack or Colima, or by installing DDEV another way. Run `ddev autostart enable --registered` to record where they are now.
 
 **The log says "Not trying to add hostnames to hosts file".** This line is always there and is normal: at boot or login there's no one to type a `sudo` password, so DDEV skips `/etc/hosts` and starts the project anyway. Names under `ddev.site` work once the computer is online; a custom hostname that needs a hosts entry needs one `ddev start` from a terminal first.
 
 **macOS: the log says "Operation not permitted".** macOS protects Desktop, Documents and Downloads, and may not let a login job use a project there even though it works from Terminal. Move the project to another folder, such as `~/Sites`.
 
-**`list` shows a project as `orphaned`.** The project was deleted or renamed while registered, so its autostart service fails every time. Remove it with `ddev autostart disable <project>`.
+**`list` shows a project as `orphaned`.** The project was deleted or renamed while registered, so its autostart service fails every time. Remove it with `ddev autostart disable <project>`. DDEV doesn't tell add-ons when a project is deleted, so run `disable` before `ddev delete` when you can. Removing the entry in Login Items only stops it from running; `disable` removes its files.
 
 ## Uninstalling
 

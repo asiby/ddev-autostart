@@ -2,7 +2,7 @@
 #ddev-generated
 
 ## Description: Start DDEV projects automatically at boot (Linux) or login (macOS)
-## Usage: autostart [enable|disable|status|list] [project-name...|--running|--all] | --version
+## Usage: autostart [enable|disable|status|list] [project-name...|--running|--registered|--all] | --version
 ## Example: "ddev autostart enable" (inside a project), "ddev autostart enable site-a shop", "ddev autostart enable --running" or "ddev autostart list"
 ## CanRunGlobally: true
 
@@ -12,12 +12,15 @@ usage() {
     cat <<'EOF'
 Usage: ddev autostart <enable|disable|status> [project-name...]
        ddev autostart enable --running
+       ddev autostart enable --registered
        ddev autostart disable --all
        ddev autostart list
        ddev autostart --version
 
   enable    Register projects to start automatically
             --running registers every project that is running right now
+            --registered rewrites every registration (after an add-on update,
+            or after moving docker or ddev)
   disable   Remove projects' autostart registrations (does not stop the projects)
             --all removes the registration of every project
   status    Show whether projects are registered and their last result
@@ -91,10 +94,12 @@ fi
 NAMES=""
 OPT_ALL=""
 OPT_RUNNING=""
+OPT_REGISTERED=""
 for arg in "$@"; do
     case "$arg" in
         --all) OPT_ALL=1 ;;
         --running) OPT_RUNNING=1 ;;
+        --registered) OPT_REGISTERED=1 ;;
         -*) echo "❌ Error: unknown option '$arg'." >&2; usage >&2; exit 1 ;;
         *)
             if ! ddev_autostart_valid_name "$arg"; then
@@ -119,8 +124,16 @@ if [ -n "$OPT_RUNNING" ] && [ "$ACTION" != "enable" ]; then
     echo "❌ Error: --running only works with 'enable'." >&2
     exit 1
 fi
-if { [ -n "$OPT_ALL" ] || [ -n "$OPT_RUNNING" ]; } && [ -n "$NAMES" ]; then
-    echo "❌ Error: use either project names or --all/--running, not both." >&2
+if [ -n "$OPT_REGISTERED" ] && [ "$ACTION" != "enable" ]; then
+    echo "❌ Error: --registered only works with 'enable'." >&2
+    exit 1
+fi
+if [ -n "$OPT_RUNNING" ] && [ -n "$OPT_REGISTERED" ]; then
+    echo "❌ Error: use either --running or --registered, not both." >&2
+    exit 1
+fi
+if { [ -n "$OPT_ALL" ] || [ -n "$OPT_RUNNING" ] || [ -n "$OPT_REGISTERED" ]; } && [ -n "$NAMES" ]; then
+    echo "❌ Error: use either project names or --all/--running/--registered, not both." >&2
     exit 1
 fi
 
@@ -132,6 +145,39 @@ if [ -n "$OPT_ALL" ]; then
         echo "ℹ️  No projects are registered for autostart."
         exit 0
     fi
+elif [ -n "$OPT_REGISTERED" ]; then
+    # Rewrite each registration as `enable` would now, but only those known to
+    # be on: `enable` turns a registration on, so one the user turned off with
+    # systemctl or launchctl, or whose state can't be read right now, is
+    # skipped. So is a project that can't be found (enable would fail).
+    registered="$(plugin_list_registered)"
+    if [ -z "$registered" ]; then
+        echo "ℹ️  No projects are registered for autostart."
+        exit 0
+    fi
+    ddev_autostart_load_projects
+    skipped=""
+    while IFS=$'\t' read -r name state _; do
+        [ -n "$name" ] || continue
+        if [ -z "$(ddev_autostart_resolve_approot "$name" || true)" ]; then
+            echo "Skipping ${name}: can't find the project or its folder. If you deleted it, remove the registration with: ddev autostart disable ${name}"
+            skipped=1
+        elif [ "$state" = "disabled" ]; then
+            echo "Skipping ${name}: it was turned off. Turn it back on with: ddev autostart enable ${name}"
+            skipped=1
+        elif [ "$state" != "enabled" ]; then
+            echo "Skipping ${name}: can't tell whether it's turned on (${state:-no state}). To update it anyway, which also turns it on: ddev autostart enable ${name}"
+            skipped=1
+        else
+            NAMES="${NAMES:+$NAMES }$name"
+        fi
+    done <<<"$registered"
+    if [ -z "$NAMES" ]; then
+        echo "ℹ️  Nothing to update."
+        exit 0
+    fi
+    [ -n "$skipped" ] && echo
+    echo "Updating the registrations of: ${NAMES}"
 elif [ -n "$OPT_RUNNING" ]; then
     ddev_autostart_load_projects
     projects="$DDEV_AUTOSTART_PROJECTS"
@@ -185,6 +231,23 @@ if [ "$ACTION" = "enable" ]; then
     fi
 fi
 
+# --registered rewrites a registration with the Docker and DDEV settings it was
+# made with (DOCKER_HOST and the like), not the current shell's: a project
+# registered for Colima must stay on Colima. Plugins that can't report them
+# (plugin_registered_env is optional) use the current shell's.
+enable_registered() {
+    local line
+    if declare -F plugin_registered_env >/dev/null; then
+        unset DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DDEV_XDG_CONFIG_HOME
+        while IFS= read -r line; do
+            case "${line%%=*}" in
+                DOCKER_HOST | DOCKER_CONTEXT | DOCKER_CONFIG | DDEV_XDG_CONFIG_HOME) export "${line?}" ;;
+            esac
+        done < <(plugin_registered_env "$1")
+    fi
+    plugin_enable "$1" "$2"
+}
+
 # --- Run ------------------------------------------------------------------------
 failed=""
 count=0
@@ -192,7 +255,12 @@ for name in $NAMES; do
     count=$((count + 1))
     [ "$count" -gt 1 ] && echo
     # `disable` and `status` must still work for a project that was deleted or moved.
-    if ! "plugin_${ACTION}" "$name" "$(approot_of "$name")"; then
+    if [ -n "$OPT_REGISTERED" ]; then
+        # In a subshell, so one project's settings don't carry over to the next.
+        if ! (enable_registered "$name" "$(approot_of "$name")"); then
+            failed="$failed $name"
+        fi
+    elif ! "plugin_${ACTION}" "$name" "$(approot_of "$name")"; then
         failed="$failed $name"
     fi
 done

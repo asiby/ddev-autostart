@@ -15,6 +15,15 @@ post_install_actions:
   - |
     #ddev-description:Show how to use ddev autostart
     echo "ddev autostart is installed for all projects; no restart is needed. Try: ddev autostart list"
+    # After an update, existing registrations still hold what the earlier
+    # version wrote; `enable --registered` rewrites them.
+    for f in "${DDEV_AUTOSTART_AGENT_DIR:-$HOME/Library/LaunchAgents}"/ddev-autostart.*.plist \
+      "${DDEV_AUTOSTART_UNIT_DIR:-/etc/systemd/system}"/ddev-autostart-*.service; do
+      if [ -f "$f" ]; then
+        echo "To update projects registered with an earlier version, run: ddev autostart enable --registered"
+        break
+      fi
+    done
 
 removal_actions:
   - |

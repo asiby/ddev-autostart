@@ -253,9 +253,10 @@ Environment="PATH=$(_sd_escape "$(_sd_service_path "$ddev_bin" "$docker_bin")")"
 # (needed only when a hostname doesn't resolve yet) instead of failing.
 Environment="DDEV_NONINTERACTIVE=true"
 ${extra_env}
-# Wait up to ~2 minutes for the Docker daemon to answer before starting.
+# First check that docker and ddev are still where enable found them.
 # (\$\$ is systemd's escape for a literal \$ inside Exec lines.)
-ExecStartPre=/bin/sh -c 'i=0; until "${exec_docker}" info >/dev/null 2>&1; do i=\$\$((i+1)); [ \$\$i -ge 60 ] && exit 1; sleep 2; done'
+# Then wait up to ~2 minutes for the Docker daemon to answer.
+ExecStartPre=/bin/sh -c 'for t in "${exec_docker}" "${exec_ddev}"; do [ -x "\$\$t" ] || { echo "\$\$t is not there any more (moved or uninstalled). Run: ddev autostart enable ${name}"; exit 1; }; done; i=0; until "${exec_docker}" info >/dev/null 2>&1; do i=\$\$((i+1)); [ \$\$i -ge 60 ] && exit 1; sleep 2; done'
 # One ddev start at a time (see "Design"); the lock is released when it exits.
 ExecStart=/bin/sh -c 'mkdir -p "\$\${3%%/*}" 2>/dev/null; if command -v flock >/dev/null 2>&1 && true 2>/dev/null >>"\$\$3"; then flock -o -w 0 -E 254 "\$\$3" true 2>/dev/null; p=\$\$?; if [ "\$\$p" -eq 0 ] || [ "\$\$p" -eq 254 ]; then flock -o -w 600 -E 254 "\$\$3" "\$\$1" start "\$\$2"; rc=\$\$?; [ "\$\$rc" -ne 254 ] && exit "\$\$rc"; echo "Waited 10 minutes for another project to start; starting anyway."; else echo "Warning: starting without the start lock (this flock does not support -o, -w and -E); projects starting together may fail."; fi; else echo "Warning: starting without the start lock (no flock, or \$\${3%%/*} not writable); projects starting together may fail."; fi; exec "\$\$1" start "\$\$2"' ddev-autostart "${exec_ddev}" ${name} "${exec_lock}"
 ExecStop="${exec_ddev}" stop ${name}
@@ -476,4 +477,18 @@ plugin_list_registered() {
         active="$(systemctl is-active "$base" 2>/dev/null || true)"
         printf '%s\t%s\t%s\n' "$name" "${enabled:-unknown}" "${active:-unknown}"
     done
+}
+
+# Optional: the Docker and DDEV settings (VAR=value lines) a registration was
+# written with, so `enable --registered` can keep them instead of taking the
+# current shell's.
+plugin_registered_env() {
+    local unit var value
+    unit="$(_sd_unit_path "$1")"
+    _sd_is_mine "$unit" || return 0
+    for var in DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DDEV_XDG_CONFIG_HOME; do
+        value="$(sed -n "s/^Environment=\"${var}=\\(.*\\)\"\$/\\1/p" "$unit" | head -n 1)"
+        [ -n "$value" ] && printf '%s=%s\n' "$var" "${value//%%/%}"
+    done
+    return 0
 }

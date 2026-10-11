@@ -1,0 +1,72 @@
+#!/bin/sh
+#ddev-generated
+#
+# ddev-autostart login job (macOS). launchd runs it at login, once for each
+# registered project, as the LaunchAgent written by plugins/launchd.sh says:
+#   ddev-autostart DOCKER DDEV PROJECT LOG AGENT
+# It ships with the add-on instead of being written into each LaunchAgent, so
+# macOS lists the job under this file's name in Login Items, and add-on
+# updates reach every registration without running `enable` again.
+# POSIX sh: macOS's /bin/sh is bash 3.2 in POSIX mode.
+
+docker="$1" ddev="$2" project="$3" log="$4" agent="$5"
+
+# Write everything to LOG, creating its folder. `true`, not `:`: a failed
+# redirection on a special builtin like `:` makes a POSIX shell exit.
+if mkdir -p "${log%/*}" 2>/dev/null && true 2>/dev/null >>"$log"; then
+    exec >>"$log" 2>&1
+fi
+echo "== $(date): ddev start $project"
+
+# `disable` leaves a running job to finish; if it ran meanwhile, nothing will
+# read this log again. On every exit, including the early ones below.
+trap '[ -z "$agent" ] || [ -e "$agent" ] || rm -f "$log"' EXIT
+
+for tool in "$docker" "$ddev"; do
+    if [ ! -x "$tool" ]; then
+        echo "$tool is not there any more (moved or uninstalled). Run: ddev autostart enable $project"
+        echo "That records where it is now."
+        exit 1
+    fi
+done
+
+i=0
+until "$docker" info >/dev/null 2>&1; do
+    i=$((i + 1))
+    if [ "$i" -ge 150 ]; then # x 2 seconds
+        echo "Docker did not respond within 5 minutes."
+        exit 1
+    fi
+    sleep 2
+done
+
+# One `ddev start` at a time: projects starting at the same login race to
+# create DDEV's shared network and fail ("network with name ddev_default
+# already exists"). perl holds an flock on a file next to the log and runs
+# ddev as a child that does NOT inherit it (perl's files are close-on-exec):
+# otherwise processes ddev leaves running, like Mutagen's daemon, would keep
+# the lock forever. The kernel releases it when perl exits, even if killed.
+# After 10 minutes of waiting it starts anyway. perl exits with ddev's status.
+if command -v perl >/dev/null 2>&1; then
+    # shellcheck disable=SC2016 # perl code, not shell
+    perl -e '$| = 1; use Fcntl ":flock"; my $l = shift; my $f;
+        if (open($f, ">>", $l)) {
+            my $ok = eval { local $SIG{ALRM} = sub { die "timeout\n" }; alarm 600; flock($f, LOCK_EX) or die "$l: $!\n"; alarm 0; 1 };
+            alarm 0;
+            if (!$ok) {
+                if ($@ eq "timeout\n") { print "Waited 10 minutes for another project to start; starting anyway.\n"; }
+                else { chomp(my $e = $@); print "Warning: starting without the start lock ($e); projects starting together may fail.\n"; }
+            }
+        } else { print "Warning: starting without the start lock ($l: $!); projects starting together may fail.\n"; }
+        system(@ARGV);
+        if ($? == -1) { print STDERR "Could not run $ARGV[0]: $!\n"; exit 127; }
+        exit($? & 127 ? 128 + ($? & 127) : $? >> 8);' \
+        "${log%/*}/.start.lock" "$ddev" start "$project"
+    rc=$?
+else
+    echo "Warning: starting without the start lock (perl not found); projects starting together may fail."
+    "$ddev" start "$project"
+    rc=$?
+fi
+
+exit "$rc"
